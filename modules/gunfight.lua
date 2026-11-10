@@ -1692,13 +1692,17 @@ end
 
 -- no shadow: the reference glyph edges are symmetric antialiasing, nothing under them
 local bannerText = new("TextLabel", {
-    Size = UDim2.fromScale(1, 1),
+    Size = UDim2.new(1, -24, 1, -10),
+    Position = UDim2.fromOffset(12, 5),
     BackgroundTransparency = 1,
     FontFace = F_BANNER,
+    TextScaled = true,
     TextSize = 60,
     TextColor3 = Color3.new(1, 1, 1),
     Text = "Aurora Loader",
 }, banner)
+
+local bannerFit = new("UITextSizeConstraint", { MaxTextSize = 60, MinTextSize = 18 }, bannerText)
 
 -- OBLIQUE. Roblox has no skew on a GuiObject and it does not synthesize an
 -- italic either -- FontStyle.Italic on Oswald returns a byte identical width and
@@ -2015,6 +2019,7 @@ local function applySkin()
 
     bannerText.FontFace = titleFace
     bannerText.TextSize = sk.titleSize
+    bannerFit.MaxTextSize = sk.titleSize
     bannerText.TextColor3 = sk.titleColor
     bannerText.TextXAlignment = sk.titleAlign
     bannerText.Size = UDim2.new(1, -leftPad, 1, 0)
@@ -2672,7 +2677,7 @@ local function configPage()
 end
 
 local function rootPage()
-    return { title = "Aurora Loader", subtitle = "Aurora Loader", items = {
+    return { title = "Gunfight Arena", subtitle = "Aurora", items = {
         Sub("Aimbot",  aimPage,    "Silent aim, bone selection, FOV and range."),
         Sub("Targets", targetPage, "Who gets picked, and what has to be true first."),
         Sub("ESP",     espPage,    "Boxes, names, health, skeletons and chams."),

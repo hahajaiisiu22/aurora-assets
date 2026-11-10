@@ -4716,6 +4716,7 @@ local HttpService      = game:GetService("HttpService")
 local Lighting         = game:GetService("Lighting")
 local TeleportService  = game:GetService("TeleportService")
 local ContextActionService = game:GetService("ContextActionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
@@ -4771,6 +4772,10 @@ local Config = {
     EspMaxDist   = 2000,
     Fullbright   = false,
     XRay         = false,
+
+    -- godlies
+    GodlyKnife   = "None",
+    GodlyGun     = "None",
 
     -- movement
     FlySpeed     = 60,
@@ -5535,6 +5540,149 @@ pcall(function()
 end)
 
 --============================================================================
+-- godlies
+--  Every weapon MM2 has ever shipped is in ReplicatedStorage.Database.Sync --
+--  1004 entries, 172 of them Godly (107 knives, 65 guns). Each carries
+--  ItemName, ItemType, Rarity and an ItemID.
+--
+--  What works and what does not, tested in his own private server:
+--
+--    Remotes.Inventory.Equip:FireServer(id, "Weapons") with a godly he OWNS
+--    is accepted -- the server's own GetProfileData came back with the new
+--    gun. The same call with one he does not own is ignored: the reply still
+--    read the old weapon. So the server checks ownership on equip.
+--
+--    There is no local fallback for the model. MM2 keeps every weapon model
+--    server side: nothing in ReplicatedStorage holds one, the inventory draws
+--    flat images rather than ViewportFrames, and the ItemID in the database is
+--    an image asset, not a model -- game:GetObjects returns 0 objects for it
+--    while happily returning a public model like the LinkedSword. A skin the
+--    server never sends cannot be worn, even just for yourself.
+--
+--  So this page equips anything owned, lists everything for reference, and can
+--  push the whole catalogue into the client's inventory table for the look.
+--============================================================================
+
+local Sync = nil
+local godlyCache = nil
+
+local function syncDb()
+    if Sync then return Sync end
+    local db = ReplicatedStorage:FindFirstChild("Database")
+    local mod = db and db:FindFirstChild("Sync")
+    if not mod then return nil end
+    local ok, loaded = pcall(require, mod)
+    Sync = ok and loaded or nil
+    return Sync
+end
+
+local function profileData()
+    local mods = ReplicatedStorage:FindFirstChild("Modules")
+    local mod = mods and mods:FindFirstChild("ProfileData")
+    if not mod then return nil end
+    local ok, pd = pcall(require, mod)
+    return ok and pd or nil
+end
+
+local function ownsItem(id)
+    local pd = profileData()
+    local owned = pd and pd.Weapons and pd.Weapons.Owned
+    return type(owned) == "table" and owned[id] ~= nil
+end
+
+local function godlies()
+    if godlyCache then return godlyCache end
+    godlyCache = { Knife = {}, Gun = {} }
+
+    local db = syncDb()
+    if not db or type(db.Weapons) ~= "table" then return godlyCache end
+
+    for id, info in pairs(db.Weapons) do
+        if type(info) == "table" and info.Rarity == "Godly" then
+            local slot = info.ItemType
+            if slot == "Knife" or slot == "Gun" then
+                table.insert(godlyCache[slot], { id = id, name = tostring(info.ItemName or id) })
+            end
+        end
+    end
+
+    for _, list in pairs(godlyCache) do
+        table.sort(list, function(a, b) return a.name < b.name end)
+    end
+    return godlyCache
+end
+
+-- the list the picker shows: owned ones are marked, because those are the only
+-- ones the server will actually hand over
+local function godlyNames(slot)
+    local out = {}
+    for _, entry in ipairs(godlies()[slot] or {}) do
+        out[#out + 1] = entry.name .. (ownsItem(entry.id) and "  *" or "")
+    end
+    return out
+end
+
+local function godlyIdFor(slot, label)
+    local clean = label:gsub("%s*%*$", ""):gsub("%s+$", "")
+    for _, entry in ipairs(godlies()[slot] or {}) do
+        if entry.name == clean then return entry.id end
+    end
+    return nil
+end
+
+local function equipGodly(slot)
+    local label = (slot == "Knife") and Config.GodlyKnife or Config.GodlyGun
+    if label == "None" then return false, "nothing picked" end
+
+    local id = godlyIdFor(slot, label)
+    if not id then return false, "unknown item" end
+
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    local inv = remotes and remotes:FindFirstChild("Inventory")
+    local equip = inv and inv:FindFirstChild("Equip")
+    if not equip then return false, "Equip remote missing" end
+
+    -- the client's own copy first, so the inventory ui follows along, then the
+    -- server -- which is the half that decides whether you really hold it
+    local pd = profileData()
+    if pd and pd.Weapons and pd.Weapons.Equipped then
+        pd.Weapons.Equipped[slot] = id
+    end
+
+    pcall(function() equip:FireServer(id, "Weapons") end)
+
+    if not ownsItem(id) then
+        statusText = label .. ": not owned, server will refuse"
+        return true, "sent, but you do not own it"
+    end
+
+    statusText = "equipped " .. label
+    return true
+end
+
+-- Writes every godly into the client's owned table. The inventory then shows
+-- them all; the server still refuses to equip the ones that are not really
+-- yours, so this is for the look and nothing more.
+local function fillInventory()
+    local pd = profileData()
+    local owned = pd and pd.Weapons and pd.Weapons.Owned
+    if type(owned) ~= "table" then return false, "no profile data" end
+
+    local added = 0
+    for _, slot in ipairs({ "Knife", "Gun" }) do
+        for _, entry in ipairs(godlies()[slot] or {}) do
+            if owned[entry.id] == nil then
+                owned[entry.id] = 1
+                added += 1
+            end
+        end
+    end
+
+    statusText = "added " .. added .. " godlies to the inventory view"
+    return true, added
+end
+
+--============================================================================
 -- config file
 --============================================================================
 
@@ -5785,6 +5933,10 @@ local function Slider(label, key, min, max, step, dec, desc, onChange)
              step = step, dec = dec or 0, desc = desc, onChange = onChange }
 end
 local function Action(label, fn, desc) return { kind = "action", label = label, fn = fn, desc = desc } end
+-- a long list gets a page of its own, which is what makes 107 knives workable
+local function Picker(label, key, listFn, desc, onChange)
+    return { kind = "picker", label = label, key = key, listFn = listFn, desc = desc, onChange = onChange }
+end
 
 local function selectable(item) return item.kind ~= "header" and item.kind ~= "info" end
 
@@ -5804,6 +5956,25 @@ end
 
 local function popPage()
     if #stack > 1 then table.remove(stack) render() end
+end
+
+local function buildPickerPage(item)
+    local items = { Header(item.label) }
+
+    table.insert(items, Action("None", function()
+        Config[item.key] = "None"
+        popPage()
+    end, "Clear this slot."))
+
+    for _, name in ipairs(item.listFn()) do
+        table.insert(items, Action(name, function()
+            Config[item.key] = name
+            if item.onChange then item.onChange(name) end
+            popPage()
+        end, name))
+    end
+
+    return { title = item.label, subtitle = item.label, items = items }
 end
 
 local function runScript(url, name)
@@ -5951,6 +6122,48 @@ local function scriptPage()
     } }
 end
 
+local function godlyPage()
+    return { title = "Godlies", subtitle = "Godlies", items = {
+        Info("equipped", function()
+            local pd = profileData()
+            local eq = pd and pd.Weapons and pd.Weapons.Equipped
+            if not eq then return "no profile data" end
+            return string.format("knife %s   gun %s", tostring(eq.Knife), tostring(eq.Gun))
+        end),
+        Header("Pick"),
+        Picker("Knife", "GodlyKnife", function() return godlyNames("Knife") end,
+            "Every godly knife in the game. A star means you own it -- those are the ones the server will actually give you."),
+        Picker("Gun", "GodlyGun", function() return godlyNames("Gun") end,
+            "Every godly gun. A star means you own it."),
+        Header("Apply"),
+        Action("Equip Knife", function()
+            local ok, err = equipGodly("Knife")
+            if not ok then error(tostring(err)) end
+        end, "Sets it on the client and fires the game's own equip remote."),
+        Action("Equip Gun", function()
+            local ok, err = equipGodly("Gun")
+            if not ok then error(tostring(err)) end
+        end, "Sets it on the client and fires the game's own equip remote."),
+        Action("Equip Both", function()
+            equipGodly("Knife")
+            equipGodly("Gun")
+        end, "Both slots at once."),
+        Header("Inventory"),
+        Action("Show All In Inventory", function()
+            local ok, err = fillInventory()
+            if not ok then error(tostring(err)) end
+        end, "Writes all 172 godlies into the client's owned list so the inventory shows them. Look only -- the server still checks ownership on equip."),
+        Info("counts", function()
+            local g = godlies()
+            local ownK, ownG = 0, 0
+            for _, e in ipairs(g.Knife) do if ownsItem(e.id) then ownK += 1 end end
+            for _, e in ipairs(g.Gun) do if ownsItem(e.id) then ownG += 1 end end
+            return string.format("%d knives (%d yours), %d guns (%d yours)",
+                #g.Knife, ownK, #g.Gun, ownG)
+        end),
+    } }
+end
+
 local function configPage()
     return { title = "Config", subtitle = "Config", items = {
         Header("File"),
@@ -5977,6 +6190,7 @@ local function rootPage()
         Sub("Murderer", murdererPage, "Kill aura and the silent knife."),
         Sub("Sheriff",  sheriffPage,  "Silent aim, aim lock, auto shoot."),
         Sub("Innocent", innocentPage, "Gun drops and coins."),
+        Sub("Godlies",  godlyPage,    "Equip any godly you own, and list every one that exists."),
         Sub("Visuals",  visualPage,   "Role ESP, chams, tracers, lighting."),
         Sub("Movement", movementPage, "Fly, noclip, speed, jump."),
         Sub("Scripts",  scriptPage,   "Admin and server tools."),
@@ -5988,7 +6202,7 @@ end
 local function valueText(item)
     if item.kind == "sub" then return ">>>" end
     if item.kind == "toggle" then return Config[item.key] and "ON" or "OFF" end
-    if item.kind == "cycle" then return tostring(Config[item.key]) end
+    if item.kind == "cycle" or item.kind == "picker" then return tostring(Config[item.key]) end
     if item.kind == "slider" then return string.format("%." .. item.dec .. "f", Config[item.key]) end
     return ""
 end
@@ -6109,6 +6323,8 @@ local function activate()
 
     if item.kind == "sub" then
         pushPage(item.pageFn())
+    elseif item.kind == "picker" then
+        pushPage(buildPickerPage(item))
     elseif item.kind == "toggle" or item.kind == "cycle" or item.kind == "slider" then
         adjust(1)
     elseif item.kind == "action" then
@@ -6201,6 +6417,12 @@ _G.MM2 = {
     Hook   = function() return hookInstalled, hookError end,
     Install = installHook,
     Drops  = gunDrops,
+    Godly  = {
+        Equip = equipGodly,
+        Names = godlyNames,
+        Fill  = fillInventory,
+        Owns  = ownsItem,
+    },
     Menu = {
         Open = function() root.Visible = true bindNavSink() render() end,
         Close = function() root.Visible = false unbindNavSink() end,

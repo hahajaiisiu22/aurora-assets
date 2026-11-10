@@ -3541,6 +3541,7 @@ local TweenService     = game:GetService("TweenService")
 local HttpService      = game:GetService("HttpService")
 local Lighting         = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ContextActionService = game:GetService("ContextActionService")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
@@ -4549,13 +4550,38 @@ end
 
 pushPage(rootPage())
 
+-- The arrow keys drive the character through the engine's own CAS binding, and
+-- UserInputService cannot stop that -- it only listens. So while the panel is
+-- up the four keys are taken at a higher CAS priority and sunk; the menu still
+-- reads them through InputBegan, the character never sees them. Unbound on
+-- close, so movement comes straight back.
+local NAV_SINK = "hypershot_nav_sink"
+local NAV_SINK_KEYS = {
+    Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right,
+}
+
+local function sinkNav()
+    return Enum.ContextActionResult.Sink
+end
+
+local function bindNavSink()
+    ContextActionService:BindActionAtPriority(
+        NAV_SINK, sinkNav, false,
+        Enum.ContextActionPriority.High.Value + 1000,
+        table.unpack(NAV_SINK_KEYS))
+end
+
+local function unbindNavSink()
+    pcall(function() ContextActionService:UnbindAction(NAV_SINK) end)
+end
+
 track(UserInputService.InputBegan:Connect(function(input, processed)
     if UserInputService:GetFocusedTextBox() then return end
 
     local k = input.KeyCode
     if k == Enum.KeyCode.Insert or k == Enum.KeyCode.Delete then
         root.Visible = not root.Visible
-        if root.Visible then render() end
+        if root.Visible then bindNavSink() render() else unbindNavSink() end
         return
     end
 
@@ -4612,8 +4638,8 @@ _G.Hypershot = {
     Status = function() return statusText end,
     Target = function() return currentTarget end,
     Local  = localEntity,
-    Menu = { Open = function() root.Visible = true render() end,
-             Close = function() root.Visible = false end,
+    Menu = { Open = function() root.Visible = true bindNavSink() render() end,
+             Close = function() root.Visible = false unbindNavSink() end,
              Draw = function() render() end,
              Move = move, Adjust = adjust, Select = activate, Back = popPage,
              Page = function()
@@ -4628,6 +4654,7 @@ _G.__HYPERSHOT = function()
     pcall(function() RunService:UnbindFromRenderStep(RESTORE_BIND) end)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     for model in pairs(drawings) do pcall(chamsFor, model, false) end
+    pcall(unbindNavSink)
     pcall(function() espGui:Destroy() end)
     pcall(function() screen:Destroy() end)
     Config.Fullbright, Config.NoFog = false, false

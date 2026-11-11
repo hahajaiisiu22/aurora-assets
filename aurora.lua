@@ -2746,16 +2746,20 @@ local function themePage()
     } }
 end
 
--- filled in below, once rootPage exists to be read
-local setMinecraftSkin
-
 local function configPage()
     return { title = "Config", subtitle = "Config", items = {
         Header("Skin"),
         Toggle("Minecraft UI", "MinecraftUI",
             "Swap this menu for the minecraft inventory. Right shift opens it, and the "
             .. "redstone block on its hotbar brings this one back.",
-            function(on) if setMinecraftSkin then setMinecraftSkin(on) end end),
+            function(on)
+                if _G.AURORA_SKIN_TOGGLE then
+                    _G.AURORA_SKIN_TOGGLE(on)
+                else
+                    Config.MinecraftUI = false
+                    warn("[aurora] the minecraft skin needs the full loader script")
+                end
+            end),
         Header("Wheel"),
         Toggle("Weapon Wheel", "WheelEnabled",
             "Hold the wheel key for the gta wheel. Mouse picks the class, left and right page through its guns, release equips."),
@@ -2801,157 +2805,20 @@ local function rootPage()
 end
 
 --============================================================================
--- minecraft skin
---  The inventory is a second FACE on this menu, not a second menu. It is given
---  the pages this module already builds -- every Sub becomes a page, every row
---  becomes an item -- so a feature added anywhere above shows up in both skins
---  with nothing else to write.
+-- minecraft skin hook
+--  The skin itself lives in the loader, not here. This chunk already sits at
+--  luau's 200 locals per function and the bridge needs eight more of them, so
+--  all this module does is hand over the handful of things the skin reads.
 --============================================================================
 
-local MC_URL = "https://raw.githubusercontent.com/hahajaiisiu22/aurora-assets/main/mcui.lua"
-
--- a word in the label picks the item. First hit wins, so the specific words
--- sit above the loose ones.
-local MC_ICONS = {
-    { "silent",   "crossbow" },       { "trigger",  "crossbow" },
-    { "aim",      "diamond_sword" },  { "knife",    "diamond_sword" },
-    { "weapon",   "diamond_sword" },  { "aura",     "tnt" },
-    { "kill",     "tnt" },            { "fov",      "spyglass" },
-    { "range",    "spyglass" },       { "wheel",    "compass" },
-    { "tracer",   "compass" },        { "radar",    "compass" },
-    { "esp",      "ender_eye" },      { "box",      "ender_eye" },
-    { "name",     "ender_eye" },      { "cham",     "water_bucket" },
-    { "skeleton", "arrow" },          { "bone",     "arrow" },
-    { "target",   "arrow" },          { "ammo",     "arrow" },
-    { "health",   "golden_apple" },   { "god",      "golden_apple" },
-    { "coin",     "golden_apple" },   { "bright",   "glowstone_dust" },
-    { "light",    "glowstone_dust" }, { "fog",      "glass_pane" },
-    { "speed",    "diamond_boots" },  { "walk",     "diamond_boots" },
-    { "jump",     "rabbit_foot" },    { "fly",      "elytra" },
-    { "noclip",   "ender_pearl" },    { "teleport", "ender_pearl" },
-    { "void",     "ender_pearl" },    { "reload",   "clock" },
-    { "rate",     "clock" },          { "delay",    "clock" },
-    { "smooth",   "clock" },          { "lead",     "clock" },
-    { "anti",     "shield" },         { "wall",     "shield" },
-    { "save",     "chest" },          { "load",     "chest" },
-    { "script",   "enchanted_book" }, { "admin",    "enchanted_book" },
-    { "rejoin",   "oak_boat" },       { "server",   "oak_boat" },
-    { "hop",      "oak_boat" },       { "unload",   "barrier" },
-    { "player",   "totem_of_undying" },{ "bot",     "totem_of_undying" },
-    { "gun",      "crossbow" },       { "theme",    "redstone_block" },
+_G.AURORA_SKIN = {
+    root    = rootPage,
+    config  = Config,
+    screen  = screen,
+    save    = function() pcall(saveConfig) end,
+    repaint = function() pcall(render) end,
+    unload  = function() if _G.__AURORA then _G.__AURORA() end end,
 }
-
-local function mcIcon(label)
-    local low = string.lower(tostring(label or ""))
-    for _, pair in ipairs(MC_ICONS) do
-        if string.find(low, pair[1], 1, true) then return pair[2] end
-    end
-    return "redstone_block"
-end
-
--- headers, info lines and sub rows have no place in a grid of items
-local MC_KINDS = { toggle = true, slider = true, cycle = true, action = true, picker = true }
-
-local function mcPages()
-    local pages = {}
-    local root  = rootPage()
-
-    for _, row in ipairs(root.items or {}) do
-        if row.kind == "sub" and row.pageFn then
-            local ok, page = pcall(row.pageFn)
-            if ok and type(page) == "table" then
-                local items = {}
-                for _, it in ipairs(page.items or {}) do
-                    if MC_KINDS[it.kind] then
-                        local list = it.options or it.list
-                        if not list and it.listFn then
-                            local built, out = pcall(it.listFn)
-                            list = built and out or nil
-                        end
-                        items[#items + 1] = {
-                            kind     = (it.kind == "picker") and "cycle" or it.kind,
-                            label    = it.label, key = it.key, desc = it.desc,
-                            min      = it.min, max = it.max, step = it.step, dec = it.dec,
-                            onChange = it.onChange, run = it.fn, list = list,
-                            icon     = mcIcon(it.label),
-                        }
-                    end
-                end
-                if #items > 0 then
-                    pages[#pages + 1] = { name = row.label, items = items }
-                end
-            end
-        end
-    end
-
-    return pages
-end
-
-local function gtaSkin()
-    Config.MinecraftUI = false
-    if _G.AuroraMC then pcall(_G.AuroraMC.unload) end
-    screen.Enabled = true
-    pcall(render)
-end
-
-local function mcSpec()
-    return {
-        title     = rootPage().title,
-        config    = Config,
-        pages     = mcPages(),
-        utilities = {
-            { kind = "action", label = "GTA Menu", icon = "redstone_block",
-              desc = "Back to the Aurora menu.", run = gtaSkin },
-            { kind = "action", label = "Save Config", icon = "chest",
-              desc = "Write every setting to disk.", run = function() pcall(saveConfig) end },
-            { kind = "action", label = "Console", icon = "command_block",
-              desc = "The command bar. Not wired up yet.", run = function() end },
-            { kind = "action", label = "Unload", icon = "barrier",
-              desc = "Remove the menu and every hook.",
-              run = function() if _G.__AURORA then _G.__AURORA() end end },
-        },
-    }
-end
-
--- assigned, not declared: the forward local sits above configPage so the
--- toggle there can reach it
-setMinecraftSkin = function(on)
-    if not on then gtaSkin() return end
-
-    screen.Enabled = false
-
-    if _G.AuroraMC then
-        _G.AuroraMC.mount(mcSpec())
-        _G.AuroraMC.setOpen(true)
-        return
-    end
-
-    -- HttpGet pauses mid call and an executor's script thread is not always
-    -- allowed to, so the fetch gets a thread of its own. The stamp is there
-    -- because a caching http layer will hand back an old copy forever.
-    task.spawn(function()
-        local got, src = pcall(function()
-            return game:HttpGet(MC_URL .. "?t=" .. tostring(os.time()))
-        end)
-        if not got or type(src) ~= "string" or #src < 10000 then
-            Config.MinecraftUI = false
-            screen.Enabled = true
-            return
-        end
-
-        _G.AURORA_MC_SPEC = mcSpec()
-        local chunk = loadstring(src)
-        if chunk then pcall(chunk) end
-        _G.AURORA_MC_SPEC = nil
-
-        if _G.AuroraMC then
-            pcall(_G.AuroraMC.setOpen, true)
-        else
-            Config.MinecraftUI = false
-            screen.Enabled = true
-        end
-    end)
-end
 
 paintTheme()
 pushPage(rootPage())
@@ -4536,16 +4403,20 @@ local function miscPage()
     } }
 end
 
--- filled in below, once rootPage exists to be read
-local setMinecraftSkin
-
 local function configPage()
     return { title = "Config", subtitle = "Config", items = {
         Header("Skin"),
         Toggle("Minecraft UI", "MinecraftUI",
             "Swap this menu for the minecraft inventory. Right shift opens it, and the "
             .. "redstone block on its hotbar brings this one back.",
-            function(on) if setMinecraftSkin then setMinecraftSkin(on) end end),
+            function(on)
+                if _G.AURORA_SKIN_TOGGLE then
+                    _G.AURORA_SKIN_TOGGLE(on)
+                else
+                    Config.MinecraftUI = false
+                    warn("[aurora] the minecraft skin needs the full loader script")
+                end
+            end),
         Header("File"),
         Action("Save Config", function()
             local ok, err = saveConfig()
@@ -4575,157 +4446,20 @@ local function rootPage()
 end
 
 --============================================================================
--- minecraft skin
---  The inventory is a second FACE on this menu, not a second menu. It is given
---  the pages this module already builds -- every Sub becomes a page, every row
---  becomes an item -- so a feature added anywhere above shows up in both skins
---  with nothing else to write.
+-- minecraft skin hook
+--  The skin itself lives in the loader, not here. This chunk already sits at
+--  luau's 200 locals per function and the bridge needs eight more of them, so
+--  all this module does is hand over the handful of things the skin reads.
 --============================================================================
 
-local MC_URL = "https://raw.githubusercontent.com/hahajaiisiu22/aurora-assets/main/mcui.lua"
-
--- a word in the label picks the item. First hit wins, so the specific words
--- sit above the loose ones.
-local MC_ICONS = {
-    { "silent",   "crossbow" },       { "trigger",  "crossbow" },
-    { "aim",      "diamond_sword" },  { "knife",    "diamond_sword" },
-    { "weapon",   "diamond_sword" },  { "aura",     "tnt" },
-    { "kill",     "tnt" },            { "fov",      "spyglass" },
-    { "range",    "spyglass" },       { "wheel",    "compass" },
-    { "tracer",   "compass" },        { "radar",    "compass" },
-    { "esp",      "ender_eye" },      { "box",      "ender_eye" },
-    { "name",     "ender_eye" },      { "cham",     "water_bucket" },
-    { "skeleton", "arrow" },          { "bone",     "arrow" },
-    { "target",   "arrow" },          { "ammo",     "arrow" },
-    { "health",   "golden_apple" },   { "god",      "golden_apple" },
-    { "coin",     "golden_apple" },   { "bright",   "glowstone_dust" },
-    { "light",    "glowstone_dust" }, { "fog",      "glass_pane" },
-    { "speed",    "diamond_boots" },  { "walk",     "diamond_boots" },
-    { "jump",     "rabbit_foot" },    { "fly",      "elytra" },
-    { "noclip",   "ender_pearl" },    { "teleport", "ender_pearl" },
-    { "void",     "ender_pearl" },    { "reload",   "clock" },
-    { "rate",     "clock" },          { "delay",    "clock" },
-    { "smooth",   "clock" },          { "lead",     "clock" },
-    { "anti",     "shield" },         { "wall",     "shield" },
-    { "save",     "chest" },          { "load",     "chest" },
-    { "script",   "enchanted_book" }, { "admin",    "enchanted_book" },
-    { "rejoin",   "oak_boat" },       { "server",   "oak_boat" },
-    { "hop",      "oak_boat" },       { "unload",   "barrier" },
-    { "player",   "totem_of_undying" },{ "bot",     "totem_of_undying" },
-    { "gun",      "crossbow" },       { "theme",    "redstone_block" },
+_G.AURORA_SKIN = {
+    root    = rootPage,
+    config  = Config,
+    screen  = screen,
+    save    = function() pcall(saveConfig) end,
+    repaint = function() pcall(render) end,
+    unload  = function() if _G.__HYPERSHOT then _G.__HYPERSHOT() end end,
 }
-
-local function mcIcon(label)
-    local low = string.lower(tostring(label or ""))
-    for _, pair in ipairs(MC_ICONS) do
-        if string.find(low, pair[1], 1, true) then return pair[2] end
-    end
-    return "redstone_block"
-end
-
--- headers, info lines and sub rows have no place in a grid of items
-local MC_KINDS = { toggle = true, slider = true, cycle = true, action = true, picker = true }
-
-local function mcPages()
-    local pages = {}
-    local root  = rootPage()
-
-    for _, row in ipairs(root.items or {}) do
-        if row.kind == "sub" and row.pageFn then
-            local ok, page = pcall(row.pageFn)
-            if ok and type(page) == "table" then
-                local items = {}
-                for _, it in ipairs(page.items or {}) do
-                    if MC_KINDS[it.kind] then
-                        local list = it.options or it.list
-                        if not list and it.listFn then
-                            local built, out = pcall(it.listFn)
-                            list = built and out or nil
-                        end
-                        items[#items + 1] = {
-                            kind     = (it.kind == "picker") and "cycle" or it.kind,
-                            label    = it.label, key = it.key, desc = it.desc,
-                            min      = it.min, max = it.max, step = it.step, dec = it.dec,
-                            onChange = it.onChange, run = it.fn, list = list,
-                            icon     = mcIcon(it.label),
-                        }
-                    end
-                end
-                if #items > 0 then
-                    pages[#pages + 1] = { name = row.label, items = items }
-                end
-            end
-        end
-    end
-
-    return pages
-end
-
-local function gtaSkin()
-    Config.MinecraftUI = false
-    if _G.AuroraMC then pcall(_G.AuroraMC.unload) end
-    screen.Enabled = true
-    pcall(render)
-end
-
-local function mcSpec()
-    return {
-        title     = rootPage().title,
-        config    = Config,
-        pages     = mcPages(),
-        utilities = {
-            { kind = "action", label = "GTA Menu", icon = "redstone_block",
-              desc = "Back to the Aurora menu.", run = gtaSkin },
-            { kind = "action", label = "Save Config", icon = "chest",
-              desc = "Write every setting to disk.", run = function() pcall(saveConfig) end },
-            { kind = "action", label = "Console", icon = "command_block",
-              desc = "The command bar. Not wired up yet.", run = function() end },
-            { kind = "action", label = "Unload", icon = "barrier",
-              desc = "Remove the menu and every hook.",
-              run = function() if _G.__HYPERSHOT then _G.__HYPERSHOT() end end },
-        },
-    }
-end
-
--- assigned, not declared: the forward local sits above configPage so the
--- toggle there can reach it
-setMinecraftSkin = function(on)
-    if not on then gtaSkin() return end
-
-    screen.Enabled = false
-
-    if _G.AuroraMC then
-        _G.AuroraMC.mount(mcSpec())
-        _G.AuroraMC.setOpen(true)
-        return
-    end
-
-    -- HttpGet pauses mid call and an executor's script thread is not always
-    -- allowed to, so the fetch gets a thread of its own. The stamp is there
-    -- because a caching http layer will hand back an old copy forever.
-    task.spawn(function()
-        local got, src = pcall(function()
-            return game:HttpGet(MC_URL .. "?t=" .. tostring(os.time()))
-        end)
-        if not got or type(src) ~= "string" or #src < 10000 then
-            Config.MinecraftUI = false
-            screen.Enabled = true
-            return
-        end
-
-        _G.AURORA_MC_SPEC = mcSpec()
-        local chunk = loadstring(src)
-        if chunk then pcall(chunk) end
-        _G.AURORA_MC_SPEC = nil
-
-        if _G.AuroraMC then
-            pcall(_G.AuroraMC.setOpen, true)
-        else
-            Config.MinecraftUI = false
-            screen.Enabled = true
-        end
-    end)
-end
 
 --------------------------------------------------------------------- render
 local function valueText(item)
@@ -6304,16 +6038,20 @@ local function scriptPage()
     } }
 end
 
--- filled in below, once rootPage exists to be read
-local setMinecraftSkin
-
 local function configPage()
     return { title = "Config", subtitle = "Config", items = {
         Header("Skin"),
         Toggle("Minecraft UI", "MinecraftUI",
             "Swap this menu for the minecraft inventory. Right shift opens it, and the "
             .. "redstone block on its hotbar brings this one back.",
-            function(on) if setMinecraftSkin then setMinecraftSkin(on) end end),
+            function(on)
+                if _G.AURORA_SKIN_TOGGLE then
+                    _G.AURORA_SKIN_TOGGLE(on)
+                else
+                    Config.MinecraftUI = false
+                    warn("[aurora] the minecraft skin needs the full loader script")
+                end
+            end),
         Header("File"),
         Action("Save Config", function()
             local ok, err = saveConfig()
@@ -6346,157 +6084,20 @@ local function rootPage()
 end
 
 --============================================================================
--- minecraft skin
---  The inventory is a second FACE on this menu, not a second menu. It is given
---  the pages this module already builds -- every Sub becomes a page, every row
---  becomes an item -- so a feature added anywhere above shows up in both skins
---  with nothing else to write.
+-- minecraft skin hook
+--  The skin itself lives in the loader, not here. This chunk already sits at
+--  luau's 200 locals per function and the bridge needs eight more of them, so
+--  all this module does is hand over the handful of things the skin reads.
 --============================================================================
 
-local MC_URL = "https://raw.githubusercontent.com/hahajaiisiu22/aurora-assets/main/mcui.lua"
-
--- a word in the label picks the item. First hit wins, so the specific words
--- sit above the loose ones.
-local MC_ICONS = {
-    { "silent",   "crossbow" },       { "trigger",  "crossbow" },
-    { "aim",      "diamond_sword" },  { "knife",    "diamond_sword" },
-    { "weapon",   "diamond_sword" },  { "aura",     "tnt" },
-    { "kill",     "tnt" },            { "fov",      "spyglass" },
-    { "range",    "spyglass" },       { "wheel",    "compass" },
-    { "tracer",   "compass" },        { "radar",    "compass" },
-    { "esp",      "ender_eye" },      { "box",      "ender_eye" },
-    { "name",     "ender_eye" },      { "cham",     "water_bucket" },
-    { "skeleton", "arrow" },          { "bone",     "arrow" },
-    { "target",   "arrow" },          { "ammo",     "arrow" },
-    { "health",   "golden_apple" },   { "god",      "golden_apple" },
-    { "coin",     "golden_apple" },   { "bright",   "glowstone_dust" },
-    { "light",    "glowstone_dust" }, { "fog",      "glass_pane" },
-    { "speed",    "diamond_boots" },  { "walk",     "diamond_boots" },
-    { "jump",     "rabbit_foot" },    { "fly",      "elytra" },
-    { "noclip",   "ender_pearl" },    { "teleport", "ender_pearl" },
-    { "void",     "ender_pearl" },    { "reload",   "clock" },
-    { "rate",     "clock" },          { "delay",    "clock" },
-    { "smooth",   "clock" },          { "lead",     "clock" },
-    { "anti",     "shield" },         { "wall",     "shield" },
-    { "save",     "chest" },          { "load",     "chest" },
-    { "script",   "enchanted_book" }, { "admin",    "enchanted_book" },
-    { "rejoin",   "oak_boat" },       { "server",   "oak_boat" },
-    { "hop",      "oak_boat" },       { "unload",   "barrier" },
-    { "player",   "totem_of_undying" },{ "bot",     "totem_of_undying" },
-    { "gun",      "crossbow" },       { "theme",    "redstone_block" },
+_G.AURORA_SKIN = {
+    root    = rootPage,
+    config  = Config,
+    screen  = screen,
+    save    = function() pcall(saveConfig) end,
+    repaint = function() pcall(render) end,
+    unload  = function() if _G.__MM2 then _G.__MM2() end end,
 }
-
-local function mcIcon(label)
-    local low = string.lower(tostring(label or ""))
-    for _, pair in ipairs(MC_ICONS) do
-        if string.find(low, pair[1], 1, true) then return pair[2] end
-    end
-    return "redstone_block"
-end
-
--- headers, info lines and sub rows have no place in a grid of items
-local MC_KINDS = { toggle = true, slider = true, cycle = true, action = true, picker = true }
-
-local function mcPages()
-    local pages = {}
-    local root  = rootPage()
-
-    for _, row in ipairs(root.items or {}) do
-        if row.kind == "sub" and row.pageFn then
-            local ok, page = pcall(row.pageFn)
-            if ok and type(page) == "table" then
-                local items = {}
-                for _, it in ipairs(page.items or {}) do
-                    if MC_KINDS[it.kind] then
-                        local list = it.options or it.list
-                        if not list and it.listFn then
-                            local built, out = pcall(it.listFn)
-                            list = built and out or nil
-                        end
-                        items[#items + 1] = {
-                            kind     = (it.kind == "picker") and "cycle" or it.kind,
-                            label    = it.label, key = it.key, desc = it.desc,
-                            min      = it.min, max = it.max, step = it.step, dec = it.dec,
-                            onChange = it.onChange, run = it.fn, list = list,
-                            icon     = mcIcon(it.label),
-                        }
-                    end
-                end
-                if #items > 0 then
-                    pages[#pages + 1] = { name = row.label, items = items }
-                end
-            end
-        end
-    end
-
-    return pages
-end
-
-local function gtaSkin()
-    Config.MinecraftUI = false
-    if _G.AuroraMC then pcall(_G.AuroraMC.unload) end
-    screen.Enabled = true
-    pcall(render)
-end
-
-local function mcSpec()
-    return {
-        title     = rootPage().title,
-        config    = Config,
-        pages     = mcPages(),
-        utilities = {
-            { kind = "action", label = "GTA Menu", icon = "redstone_block",
-              desc = "Back to the Aurora menu.", run = gtaSkin },
-            { kind = "action", label = "Save Config", icon = "chest",
-              desc = "Write every setting to disk.", run = function() pcall(saveConfig) end },
-            { kind = "action", label = "Console", icon = "command_block",
-              desc = "The command bar. Not wired up yet.", run = function() end },
-            { kind = "action", label = "Unload", icon = "barrier",
-              desc = "Remove the menu and every hook.",
-              run = function() if _G.__MM2 then _G.__MM2() end end },
-        },
-    }
-end
-
--- assigned, not declared: the forward local sits above configPage so the
--- toggle there can reach it
-setMinecraftSkin = function(on)
-    if not on then gtaSkin() return end
-
-    screen.Enabled = false
-
-    if _G.AuroraMC then
-        _G.AuroraMC.mount(mcSpec())
-        _G.AuroraMC.setOpen(true)
-        return
-    end
-
-    -- HttpGet pauses mid call and an executor's script thread is not always
-    -- allowed to, so the fetch gets a thread of its own. The stamp is there
-    -- because a caching http layer will hand back an old copy forever.
-    task.spawn(function()
-        local got, src = pcall(function()
-            return game:HttpGet(MC_URL .. "?t=" .. tostring(os.time()))
-        end)
-        if not got or type(src) ~= "string" or #src < 10000 then
-            Config.MinecraftUI = false
-            screen.Enabled = true
-            return
-        end
-
-        _G.AURORA_MC_SPEC = mcSpec()
-        local chunk = loadstring(src)
-        if chunk then pcall(chunk) end
-        _G.AURORA_MC_SPEC = nil
-
-        if _G.AuroraMC then
-            pcall(_G.AuroraMC.setOpen, true)
-        else
-            Config.MinecraftUI = false
-            screen.Enabled = true
-        end
-    end)
-end
 
 --------------------------------------------------------------------- render
 local function valueText(item)
@@ -6757,6 +6358,163 @@ local function runMM2()
     return fn()
 end
 
+
+--============================================================================
+-- the minecraft skin
+--  A second FACE on whichever module loaded, not a second menu. The module
+--  leaves _G.AURORA_SKIN behind -- its root page, its config, its ScreenGui --
+--  and this walks it: every Sub becomes an inventory page, every row becomes
+--  an item. A feature added to a game shows up in both skins for free.
+--============================================================================
+
+do
+    local MC_URL = HOST .. "mcui.lua"
+
+    -- a word in the label picks the item. First hit wins, so the specific
+    -- words sit above the loose ones.
+    local ICONS = {
+        { "silent",   "crossbow" },        { "trigger",  "crossbow" },
+        { "aim",      "diamond_sword" },   { "knife",    "diamond_sword" },
+        { "weapon",   "diamond_sword" },   { "aura",     "tnt" },
+        { "kill",     "tnt" },             { "fov",      "spyglass" },
+        { "range",    "spyglass" },        { "wheel",    "compass" },
+        { "tracer",   "compass" },         { "radar",    "compass" },
+        { "esp",      "ender_eye" },       { "box",      "ender_eye" },
+        { "name",     "ender_eye" },       { "cham",     "water_bucket" },
+        { "skeleton", "arrow" },           { "bone",     "arrow" },
+        { "target",   "arrow" },           { "ammo",     "arrow" },
+        { "health",   "golden_apple" },    { "god",      "golden_apple" },
+        { "coin",     "golden_apple" },    { "bright",   "glowstone_dust" },
+        { "light",    "glowstone_dust" },  { "fog",      "glass_pane" },
+        { "speed",    "diamond_boots" },   { "walk",     "diamond_boots" },
+        { "jump",     "rabbit_foot" },     { "fly",      "elytra" },
+        { "noclip",   "ender_pearl" },     { "teleport", "ender_pearl" },
+        { "void",     "ender_pearl" },     { "reload",   "clock" },
+        { "rate",     "clock" },           { "delay",    "clock" },
+        { "smooth",   "clock" },           { "lead",     "clock" },
+        { "anti",     "shield" },          { "wall",     "shield" },
+        { "save",     "chest" },           { "load",     "chest" },
+        { "script",   "enchanted_book" },  { "admin",    "enchanted_book" },
+        { "rejoin",   "oak_boat" },        { "server",   "oak_boat" },
+        { "hop",      "oak_boat" },        { "unload",   "barrier" },
+        { "player",   "totem_of_undying" },{ "bot",      "totem_of_undying" },
+        { "gun",      "crossbow" },        { "theme",    "redstone_block" },
+    }
+
+    local function iconFor(label)
+        local low = string.lower(tostring(label or ""))
+        for _, pair in ipairs(ICONS) do
+            if string.find(low, pair[1], 1, true) then return pair[2] end
+        end
+        return "redstone_block"
+    end
+
+    -- headers, info lines and sub rows have no place in a grid of items
+    local KINDS = { toggle = true, slider = true, cycle = true, action = true, picker = true }
+
+    local function pagesFrom(skin)
+        local pages = {}
+        local ok, root = pcall(skin.root)
+        if not ok or type(root) ~= "table" then return pages end
+
+        for _, row in ipairs(root.items or {}) do
+            if row.kind == "sub" and row.pageFn then
+                local built, page = pcall(row.pageFn)
+                if built and type(page) == "table" then
+                    local items = {}
+                    for _, it in ipairs(page.items or {}) do
+                        if KINDS[it.kind] then
+                            local list = it.options or it.list
+                            if not list and it.listFn then
+                                local made, out = pcall(it.listFn)
+                                list = made and out or nil
+                            end
+                            items[#items + 1] = {
+                                kind     = (it.kind == "picker") and "cycle" or it.kind,
+                                label    = it.label, key = it.key, desc = it.desc,
+                                min      = it.min, max = it.max, step = it.step, dec = it.dec,
+                                onChange = it.onChange, run = it.fn, list = list,
+                                icon     = iconFor(it.label),
+                            }
+                        end
+                    end
+                    if #items > 0 then
+                        pages[#pages + 1] = { name = row.label, items = items }
+                    end
+                end
+            end
+        end
+
+        return pages
+    end
+
+    local function backToGta()
+        local skin = _G.AURORA_SKIN
+        if not skin then return end
+        skin.config.MinecraftUI = false
+        if _G.AuroraMC then pcall(_G.AuroraMC.unload) end
+        if skin.screen then skin.screen.Enabled = true end
+        skin.repaint()
+    end
+
+    local function specFrom(skin)
+        local ok, root = pcall(skin.root)
+        return {
+            title     = (ok and root and root.title) or "Aurora",
+            config    = skin.config,
+            pages     = pagesFrom(skin),
+            utilities = {
+                { kind = "action", label = "GTA Menu", icon = "redstone_block",
+                  desc = "Back to the Aurora menu.", run = backToGta },
+                { kind = "action", label = "Save Config", icon = "chest",
+                  desc = "Write every setting to disk.", run = skin.save },
+                { kind = "action", label = "Console", icon = "command_block",
+                  desc = "The command bar. Not wired up yet.", run = function() end },
+                { kind = "action", label = "Unload", icon = "barrier",
+                  desc = "Remove the menu and every hook.", run = skin.unload },
+            },
+        }
+    end
+
+    _G.AURORA_SKIN_TOGGLE = function(on)
+        local skin = _G.AURORA_SKIN
+        if not skin then return end
+
+        if not on then backToGta() return end
+
+        if skin.screen then skin.screen.Enabled = false end
+
+        if _G.AuroraMC then
+            _G.AuroraMC.mount(specFrom(skin))
+            _G.AuroraMC.setOpen(true)
+            return
+        end
+
+        -- HttpGet pauses mid call and an executor's script thread is not always
+        -- allowed to, so the fetch gets a thread of its own. The stamp is there
+        -- because a caching http layer will hand back an old copy forever.
+        task.spawn(function()
+            local got, src = pcall(function()
+                return game:HttpGet(MC_URL .. "?t=" .. tostring(os.time()))
+            end)
+
+            local chunk = (got and type(src) == "string" and #src > 10000) and loadstring(src) or nil
+            if chunk then
+                _G.AURORA_MC_SPEC = specFrom(skin)
+                pcall(chunk)
+                _G.AURORA_MC_SPEC = nil
+            end
+
+            if _G.AuroraMC then
+                pcall(_G.AuroraMC.setOpen, true)
+            else
+                skin.config.MinecraftUI = false
+                if skin.screen then skin.screen.Enabled = true end
+                warn("[aurora] could not load the minecraft skin")
+            end
+        end)
+    end
+end
 
 --============================================================================
 -- supported games

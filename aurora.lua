@@ -6465,6 +6465,25 @@ do
         skin.repaint()
     end
 
+    local function specFrom(skin)
+        local ok, root = pcall(skin.root)
+        return {
+            title     = (ok and root and root.title) or "Aurora",
+            config    = skin.config,
+            pages     = pagesFrom(skin),
+            utilities = {
+                { kind = "action", label = "GTA Menu", icon = "redstone_block",
+                  desc = "Back to the Aurora menu.", run = backToGta },
+                { kind = "action", label = "Save Config", icon = "chest",
+                  desc = "Write every setting to disk.", run = skin.save },
+                { kind = "action", label = "Console", icon = "command_block",
+                  desc = "The command bar. Not wired up yet.", run = function() end },
+                { kind = "action", label = "Unload", icon = "barrier",
+                  desc = "Remove the menu and every hook.", run = skin.unload },
+            },
+        }
+    end
+
     _G.AURORA_SKIN_TOGGLE = function(on)
         local skin = skinOf()
         if not skin then return end
@@ -6483,6 +6502,7 @@ do
         -- allowed to, so the fetch gets a thread of its own. The stamp is there
         -- because a caching http layer will hand back an old copy forever.
         task.spawn(function()
+          local fine, why = pcall(function()
             local got, src = pcall(function()
                 return game:HttpGet(MC_URL .. "?t=" .. tostring(os.time()))
             end)
@@ -6501,6 +6521,15 @@ do
                 if skin.screen then skin.screen.Enabled = true end
                 warn("[aurora] could not load the minecraft skin")
             end
+          end)
+
+          -- a thread that dies inside task.spawn takes its error with it, and
+          -- the menu would just sit there hidden. So the thread reports.
+          if not fine then
+            skin.config.MinecraftUI = false
+            if skin.screen then skin.screen.Enabled = true end
+            warn("[aurora] minecraft skin failed: " .. tostring(why))
+          end
         end)
     end
 end

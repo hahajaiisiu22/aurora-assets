@@ -6359,43 +6359,219 @@ end
 do
     local MC_URL = HOST .. "mcui.lua"
 
-    -- a word in the label picks the item. First hit wins, so the specific
-    -- words sit above the loose ones.
-    local ICONS = {
-        { "silent",   "crossbow" },        { "trigger",  "crossbow" },
-        { "aim",      "diamond_sword" },   { "knife",    "diamond_sword" },
-        { "weapon",   "diamond_sword" },   { "aura",     "tnt" },
-        { "kill",     "tnt" },             { "fov",      "spyglass" },
-        { "range",    "spyglass" },        { "wheel",    "compass" },
-        { "tracer",   "compass" },         { "radar",    "compass" },
-        { "esp",      "ender_eye" },       { "box",      "ender_eye" },
-        { "name",     "ender_eye" },       { "cham",     "water_bucket" },
-        { "skeleton", "arrow" },           { "bone",     "arrow" },
-        { "target",   "arrow" },           { "ammo",     "arrow" },
-        { "health",   "golden_apple" },    { "god",      "golden_apple" },
-        { "coin",     "golden_apple" },    { "bright",   "glowstone_dust" },
-        { "light",    "glowstone_dust" },  { "fog",      "glass_pane" },
-        { "speed",    "diamond_boots" },   { "walk",     "diamond_boots" },
-        { "jump",     "rabbit_foot" },     { "fly",      "elytra" },
-        { "noclip",   "ender_pearl" },     { "teleport", "ender_pearl" },
-        { "void",     "ender_pearl" },     { "reload",   "clock" },
-        { "rate",     "clock" },           { "delay",    "clock" },
-        { "smooth",   "clock" },           { "lead",     "clock" },
-        { "anti",     "shield" },          { "wall",     "shield" },
-        { "save",     "chest" },           { "load",     "chest" },
-        { "script",   "enchanted_book" },  { "admin",    "enchanted_book" },
-        { "rejoin",   "oak_boat" },        { "server",   "oak_boat" },
-        { "hop",      "oak_boat" },        { "unload",   "barrier" },
-        { "player",   "totem_of_undying" },{ "bot",      "totem_of_undying" },
-        { "gun",      "crossbow" },        { "theme",    "redstone_block" },
+    -- Icons are chosen per label, not by keyword guessing. The labels come off
+    -- the three modules' own pages, so the picture matches the row. Anything
+    -- new falls through to a keyword, and only then to a per-kind default --
+    -- which is why nothing ends up as a wall of redstone blocks any more.
+    local BY_PAGE = {
+        aimbot = {
+            ["enabled"]        = "diamond_sword",
+            ["method"]         = "crossbow",
+            ["silent radius"]  = "spyglass",
+            ["engage"]         = "bow",
+            ["hold key"]       = "command_block",
+            ["key"]            = "command_block",
+            ["mode"]           = "crossbow",
+            ["bone"]           = "arrow",
+            ["fov"]            = "spyglass",
+            ["camera fov"]     = "spyglass",
+            ["range"]          = "compass",
+            ["lock smoothness"]= "clock",
+            ["smoothness"]     = "clock",
+            ["sticky target"]  = "ender_pearl",
+            ["visible only"]   = "glass_pane",
+        },
+        targets = {
+            ["bots"]         = "redstone_block",
+            ["players"]      = "totem_of_undying",
+            ["hit bots"]     = "redstone_block",
+            ["hit players"]  = "totem_of_undying",
+            ["free for all"] = "tnt",
+            ["wall check"]   = "glass_pane",
+            ["team check"]   = "shield",
+            ["predict"]      = "rabbit_foot",
+            ["lead trim"]    = "clock",
+            ["cone clamp"]   = "spyglass",
+        },
+        esp = {
+            ["enabled"]      = "ender_eye",
+            ["box"]          = "glass_pane",
+            ["name"]         = "enchanted_book",
+            ["health"]       = "golden_apple",
+            ["health bar"]   = "golden_apple",
+            ["distance"]     = "compass",
+            ["skeleton"]     = "arrow",
+            ["chams"]        = "water_bucket",
+            ["tracers"]      = "bow",
+            ["tracer"]       = "bow",
+            ["rainbow"]      = "glowstone_dust",
+            ["show bots"]    = "redstone_block",
+            ["draw bots"]    = "redstone_block",
+            ["show players"] = "totem_of_undying",
+            ["max distance"] = "spyglass",
+            ["text size"]    = "enchanted_book",
+        },
+        weapons = {
+            ["primary"]           = "diamond_sword",
+            ["secondary"]         = "crossbow",
+            ["skin"]              = "water_bucket",
+            ["apply on respawn"]  = "elytra",
+            ["apply now"]         = "redstone_block",
+            ["damage"]            = "tnt",
+            ["give minigun"]      = "bow",
+            ["give laser minigun"]= "glowstone_dust",
+            ["give akimbo aa12"]  = "crossbow",
+            ["give mgl"]          = "tnt",
+        },
+        stats = {
+            ["fire rate"]           = "clock",
+            ["multiplier"]          = "rabbit_foot",
+            ["ceiling"]             = "barrier",
+            ["fast reload"]         = "arrow",
+            ["repair ammo to stock"]= "chest",
+        },
+        theme = {
+            ["preset"] = "glowstone_dust",
+            ["red"]    = "tnt",
+            ["green"]  = "glass_pane",
+            ["blue"]   = "water_bucket",
+        },
+        config = {
+            ["minecraft ui"]       = "chest",
+            ["ui"]                 = "glowstone_dust",
+            ["weapon wheel"]       = "compass",
+            ["wheel key"]          = "command_block",
+            ["save config"]        = "chest",
+            ["load config"]        = "enchanted_book",
+            ["reset target"]       = "ender_pearl",
+            ["restore fire rates"] = "clock",
+            ["disarm kill aura"]   = "shield",
+            ["unload"]             = "barrier",
+        },
+        murderer = {
+            ["kill aura"]           = "tnt",
+            ["aura radius"]         = "spyglass",
+            ["silent knife"]        = "diamond_sword",
+            ["knife through walls"] = "glass_pane",
+            ["engage"]              = "bow",
+            ["key"]                 = "command_block",
+        },
+        sheriff = {
+            ["aim lock"]      = "diamond_sword",
+            ["silent aim"]    = "crossbow",
+            ["through walls"] = "glass_pane",
+            ["auto shoot"]    = "bow",
+            ["use lead"]      = "clock",
+            ["lead"]          = "clock",
+            ["engage"]        = "bow",
+            ["key"]           = "command_block",
+        },
+        innocent = {
+            ["gun esp"]         = "crossbow",
+            ["teleport to gun"] = "ender_pearl",
+            ["coin esp"]        = "golden_apple",
+        },
+        visuals = {
+            ["role esp"]     = "ender_eye",
+            ["role"]         = "totem_of_undying",
+            ["box"]          = "glass_pane",
+            ["name"]         = "enchanted_book",
+            ["distance"]     = "compass",
+            ["tracer"]       = "bow",
+            ["chams"]        = "water_bucket",
+            ["max distance"] = "spyglass",
+            ["fullbright"]   = "glowstone_dust",
+            ["no fog"]       = "glass_pane",
+            ["x-ray"]        = "ender_eye",
+        },
+        movement = {
+            ["toggle fly"]          = "elytra",
+            ["fly speed"]           = "elytra",
+            ["noclip"]              = "ender_pearl",
+            ["infinite jump"]       = "rabbit_foot",
+            ["jump power"]          = "rabbit_foot",
+            ["walk speed"]          = "diamond_boots",
+            ["apply to character"]  = "redstone_block",
+        },
+        scripts = {
+            ["infinite yield"]  = "enchanted_book",
+            ["nameless admin"]  = "enchanted_book",
+            ["rejoin"]          = "oak_boat",
+            ["server hop"]      = "oak_boat",
+        },
+        misc = {
+            ["fullbright"] = "glowstone_dust",
+            ["no fog"]     = "glass_pane",
+            ["camera fov"] = "spyglass",
+        },
     }
 
-    local function iconFor(label)
-        local low = string.lower(tostring(label or ""))
-        for _, pair in ipairs(ICONS) do
+    -- a label that means the same thing wherever it shows up
+    local BY_LABEL = {
+        ["enabled"]      = "diamond_sword",
+        ["unload"]       = "barrier",
+        ["save config"]  = "chest",
+        ["load config"]  = "enchanted_book",
+        ["minecraft ui"] = "chest",
+        ["rejoin"]       = "oak_boat",
+        ["server hop"]   = "oak_boat",
+        ["fullbright"]   = "glowstone_dust",
+        ["no fog"]       = "glass_pane",
+        ["chams"]        = "water_bucket",
+        ["distance"]     = "compass",
+        ["name"]         = "enchanted_book",
+        ["box"]          = "glass_pane",
+    }
+
+    -- last resorts, in order: a word in the label, then the row's kind
+    local KEYWORDS = {
+        { "silent",   "crossbow" },        { "aim",      "diamond_sword" },
+        { "knife",    "diamond_sword" },   { "weapon",   "diamond_sword" },
+        { "aura",     "tnt" },             { "kill",     "tnt" },
+        { "damage",   "tnt" },             { "fov",      "spyglass" },
+        { "radius",   "spyglass" },        { "range",    "compass" },
+        { "wheel",    "compass" },         { "tracer",   "bow" },
+        { "shoot",    "bow" },             { "esp",      "ender_eye" },
+        { "wall",     "glass_pane" },      { "fog",      "glass_pane" },
+        { "bone",     "arrow" },           { "ammo",     "arrow" },
+        { "reload",   "arrow" },           { "health",   "golden_apple" },
+        { "god",      "golden_apple" },    { "coin",     "golden_apple" },
+        { "bright",   "glowstone_dust" },  { "speed",    "diamond_boots" },
+        { "walk",     "diamond_boots" },   { "jump",     "rabbit_foot" },
+        { "fly",      "elytra" },          { "noclip",   "ender_pearl" },
+        { "teleport", "ender_pearl" },     { "rate",     "clock" },
+        { "delay",    "clock" },           { "smooth",   "clock" },
+        { "lead",     "clock" },           { "anti",     "shield" },
+        { "team",     "shield" },          { "save",     "chest" },
+        { "load",     "chest" },           { "script",   "enchanted_book" },
+        { "admin",    "enchanted_book" },  { "text",     "enchanted_book" },
+        { "key",      "command_block" },   { "bot",      "redstone_block" },
+        { "player",   "totem_of_undying" },{ "role",     "totem_of_undying" },
+        { "skin",     "water_bucket" },    { "colour",   "water_bucket" },
+        { "server",   "oak_boat" },        { "hop",      "oak_boat" },
+    }
+
+    local BY_KIND = {
+        toggle = "glowstone_dust",
+        slider = "clock",
+        cycle  = "compass",
+        picker = "chest",
+        action = "redstone_block",
+    }
+
+    local function iconFor(pageName, label, kind)
+        local page = string.lower(tostring(pageName or ""))
+        local low  = string.lower(tostring(label or ""))
+
+        local set = BY_PAGE[page]
+        if set and set[low] then return set[low] end
+        if BY_LABEL[low] then return BY_LABEL[low] end
+
+        for _, pair in ipairs(KEYWORDS) do
             if string.find(low, pair[1], 1, true) then return pair[2] end
         end
-        return "redstone_block"
+
+        return BY_KIND[kind] or "redstone_block"
     end
 
     -- headers, info lines and sub rows have no place in a grid of items
@@ -6423,7 +6599,7 @@ do
                                 label    = it.label, key = it.key, desc = it.desc,
                                 min      = it.min, max = it.max, step = it.step, dec = it.dec,
                                 onChange = it.onChange, run = it.fn, list = list,
-                                icon     = iconFor(it.label),
+                                icon     = iconFor(row.label, it.label, it.kind),
                             }
                         end
                     end

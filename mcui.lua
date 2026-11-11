@@ -535,10 +535,10 @@ local hotbar      = {}
 
 local GRID_SLOTS = 40
 local HOT_SLOTS  = 10
--- the last four slots of the bottom row are the utility corner: unload, the
--- console, presets and save. They never scroll away with the page.
-local UTIL_FIRST = GRID_SLOTS - 3
-local PAGE_SLOTS = UTIL_FIRST - 1
+-- the last four hotbar slots are the utility corner: unload, the console,
+-- presets and save. Keys 7 8 9 0, always there. Slots 1 to 6 are his.
+local UTIL_FIRST = HOT_SLOTS - 3
+local PAGE_SLOTS = GRID_SLOTS
 
 local function cfg() return (spec and spec.config) or {} end
 
@@ -615,7 +615,7 @@ end
 
 local function hotbarLabels()
     local out = {}
-    for i = 1, HOT_SLOTS do out[i] = hotbar[i] and hotbar[i].label or "" end
+    for i = 1, UTIL_FIRST - 1 do out[i] = hotbar[i] and hotbar[i].label or "" end
     return out
 end
 
@@ -627,7 +627,7 @@ local function restoreHotbar(labels)
             if item.label then byLabel[item.label] = item end
         end
     end
-    for i = 1, HOT_SLOTS do
+    for i = 1, UTIL_FIRST - 1 do
         local want = labels[i]
         hotbar[i] = (want and want ~= "" and byLabel[want]) or nil
     end
@@ -683,7 +683,10 @@ local function buildAvatar(parent)
         or clone:FindFirstChild("UpperTorso") or clone:FindFirstChild("Torso")
     if not root then clone:Destroy() return vp end
 
-    local base    = root.CFrame
+    local extent = clone:GetExtentsSize()
+    local centre = clone:GetBoundingBox().Position
+    local base   = CFrame.new(centre) * (root.CFrame - root.CFrame.Position)
+
     local head    = clone:FindFirstChild("Head")
     local relHead = head and (base:Inverse() * head.CFrame) or nil
 
@@ -709,31 +712,42 @@ local function buildAvatar(parent)
     -- along it and looks back down it. The distance is not a guess -- it is the
     -- one that makes his real height fill the box: half his height divided by
     -- the tangent of half the field of view, plus a margin so nothing clips.
-    local fov    = 30
-    local extent = clone:GetExtentsSize()
-    local height = math.max(extent.Y, 4)
-    local dist   = (height * 0.5) / math.tan(math.rad(fov * 0.5)) * 1.18
-    local mid    = clone:GetPivot().Position + Vector3.new(0, extent.Y * 0.08, 0)
+    -- the distance is not a guess: half his height over the tangent of half the
+    -- field of view is exactly the range at which he fills the frame, and the
+    -- box is taller than it is wide so the height is what has to fit
+    local fov  = 30
+    local dist = (math.max(extent.Y, 4) * 0.5) / math.tan(math.rad(fov * 0.5)) * 1.15
 
     cam.FieldOfView = fov
-    cam.CFrame = CFrame.lookAt(mid + base.LookVector * dist, mid)
+    cam.CFrame = CFrame.lookAt(base.Position + base.LookVector * dist, base.Position)
 
     return vp
 end
 
+local lookYaw, lookPitch = 0, 0
+
 local function stepAvatar()
     if not avatar.model or not avatar.base then return end
+
     local yaw, pitch = 0, 0
 
     if Settings.HeadTrack and avatar.vp then
         local m    = UserInputService:GetMouseLocation()
         local abs  = avatar.vp.AbsolutePosition
         local size = avatar.vp.AbsoluteSize
-        local vp   = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
-        yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * 0.85
-        -- facing the camera flips up and down with it, same as left and right
-        pitch = math.clamp((m.Y - (abs.Y + size.Y * 0.5)) / (vp.Y * 0.32), -1, 1) * -0.5
+        -- how far the cursor is from the middle of the preview, measured in
+        -- preview widths. Using the box and not the screen keeps the feel the
+        -- same whatever size the panel is drawn at.
+        local dx = (m.X - (abs.X + size.X * 0.5)) / math.max(size.X, 1)
+        local dy = (m.Y - (abs.Y + size.Y * 0.5)) / math.max(size.Y, 1)
+        yaw   = math.clamp(dx * 0.55, -0.6, 0.6)
+        pitch = math.clamp(dy * -0.45, -0.35, 0.35)
     end
+
+    -- ease toward it so the head never snaps across the box
+    lookYaw   += (yaw - lookYaw) * 0.2
+    lookPitch += (pitch - lookPitch) * 0.2
+    yaw, pitch = lookYaw, lookPitch
 
     local bodyCF = avatar.base * CFrame.Angles(0, yaw * 0.35, 0)
     local headCF = avatar.relHead
@@ -1002,10 +1016,10 @@ local function refresh()
     gridOffset = math.clamp(gridOffset, 0, maxOff)
 
     for n = 1, PAGE_SLOTS do gridSlots[n].setItem(items[n + gridOffset]) end
+    for i = 1, UTIL_FIRST - 1 do hotSlots[i].setItem(hotbar[i]) end
     for i = 1, 4 do
-        gridSlots[UTIL_FIRST + i - 1].setItem((spec.utilities or {})[i])
+        hotSlots[UTIL_FIRST + i - 1].setItem((spec.utilities or {})[i])
     end
-    for i = 1, HOT_SLOTS do hotSlots[i].setItem(hotbar[i]) end
     for i = 1, 4 do
         armourSlots[i].setItem((spec.armour or {})[i])
         craftSlots[i].setItem(nil)
@@ -1101,12 +1115,13 @@ end
 --============================================================================
 
 local function firstFreeHot()
-    for i = 1, HOT_SLOTS do if not hotbar[i] then return i end end
+    for i = 1, UTIL_FIRST - 1 do if not hotbar[i] then return i end end
     return 1
 end
 
 local function bindHot(index, item)
-    for i = 1, HOT_SLOTS do if hotbar[i] == item then hotbar[i] = nil end end
+    if index >= UTIL_FIRST then return end
+    for i = 1, UTIL_FIRST - 1 do if hotbar[i] == item then hotbar[i] = nil end end
     hotbar[index] = item
     if spec.onHotbar then pcall(spec.onHotbar, hotbarLabels()) end
     blip(1.5, 0.3)
@@ -1135,7 +1150,7 @@ local function wireSlot(slot)
     slot.btn.MouseButton1Down:Connect(function()
         if not slot.item then return end
         if slot.role ~= "grid" and slot.role ~= "hot" then return end
-        if slot.role == "grid" and slot.index >= UTIL_FIRST then return end
+        if slot.role == "hot" and slot.index >= UTIL_FIRST then return end
         dragging = { item = slot.item, from = slot }
         if applyIcon(dragIcon, nil, slot.item.icon) then dragIcon.Visible = true end
     end)
@@ -1213,7 +1228,9 @@ local function wireInput()
 
         local n = tonumber(string.match(tostring(input.KeyCode), "KeyCode%.(%d)$"))
         if n then
-            local item = hotbar[n == 0 and 10 or n]
+            local at = (n == 0) and 10 or n
+            local item = (at >= UTIL_FIRST)
+                and (spec.utilities or {})[at - UTIL_FIRST + 1] or hotbar[at]
             if item then
                 fireItem(item, 1)
                 blip(itemState(item) and 1.45 or 1.0, 0.32)
@@ -1318,6 +1335,7 @@ if _G.AURORA_MC_SPEC then return MC.mount(_G.AURORA_MC_SPEC) end
 
 local Config = {
     Fullbright = false, NoFog = false, WalkSpeed = 16, JumpPower = 50,
+    Projectile = false,
     InfJump = false, Aimbot = false, Silent = false, FovSize = 120,
     Esp = false, Tracers = false, Chams = false, KillAura = false,
     AntiFling = false, AntiVoid = false, GodMode = false, AntiRagdoll = false,
@@ -1366,34 +1384,31 @@ local demoSpec = {
     config  = Config,
     openKey = Enum.KeyCode.RightShift,
 
+    -- one page, because every feature fits in the 40 middle slots. Pages exist
+    -- for the real modules, which carry more than this.
     pages = {
-        { name = "Combat", items = {
-            Toggle("Aimbot",       "Aimbot",    "diamond_sword",   "Pull onto the closest head."),
-            Toggle("Silent Aim",   "Silent",    "crossbow",     "Bend the shot, not the camera."),
-            Slider("FOV",          "FovSize",   "spyglass", 20, 500, 10, "Search radius in pixels."),
-            Slider("Smoothing",    "Smooth",    "clock",   1, 20, 1,    "Higher is slower and softer."),
-            Cycle ("Bone",         "Bone",      "arrow",     { "Head", "Torso", "Nearest" }, "Where the aim lands."),
-            Toggle("Kill Aura",    "KillAura",  "tnt",     "Hit anything that comes close."),
-        } },
-        { name = "Visuals", items = {
-            Toggle("Player ESP",   "Esp",       "ender_eye",     "Boxes and names through walls."),
-            Toggle("Tracers",      "Tracers",   "compass", "Line from the bottom of the screen."),
-            Toggle("Chams",        "Chams",     "water_bucket",  "Fill bodies with colour."),
-            Toggle("Fullbright",   "Fullbright","glowstone_dust",   "Flatten the lighting.", applyLight),
-            Toggle("No Fog",       "NoFog",     "glass_pane", "Push the fog to the horizon.", applyLight),
-        } },
-        { name = "Movement", items = {
-            Slider("Walk Speed",   "WalkSpeed", "diamond_boots",   16, 200, 2, "Default is 16.", applyChar),
-            Slider("Jump Power",   "JumpPower", "rabbit_foot", 50, 300, 5, "Default is 50.", applyChar),
-            Toggle("Infinite Jump","InfJump",   "elytra", "Jump again in mid air."),
-            Action("Apply Now",    "redstone_block", applyChar, "Push speed and jump onto your character."),
-        } },
-        { name = "Misc", items = {
-            Toggle("Anti Fling",   "AntiFling",   "shield",           "Clamp silly velocities."),
-            Toggle("Anti Void",    "AntiVoid",    "ender_pearl",      "Catch a fall out of the map."),
-            Toggle("God Mode",     "GodMode",     "golden_apple",     "Whatever the game allows."),
-            Toggle("Anti Ragdoll", "AntiRagdoll", "totem_of_undying", "Stand back up."),
-            Action("Rejoin", "oak_boat", function()
+        { name = "Features", items = {
+            Toggle("Aimbot",        "Aimbot",     "diamond_sword",    "Pull onto the closest head."),
+            Toggle("Silent Aim",    "Silent",     "crossbow",         "Bend the shot, not the camera."),
+            Toggle("Projectile Aim","Projectile", "bow",              "Lead moving targets."),
+            Slider("FOV",           "FovSize",    "spyglass",   20, 500, 10, "Search radius in pixels."),
+            Slider("Smoothing",     "Smooth",     "clock",      1, 20, 1,    "Higher is slower and softer."),
+            Cycle ("Bone",          "Bone",       "arrow",      { "Head", "Torso", "Nearest" }, "Where the aim lands."),
+            Toggle("Kill Aura",     "KillAura",   "tnt",              "Hit anything that comes close."),
+            Toggle("Player ESP",    "Esp",        "ender_eye",        "Boxes and names through walls."),
+            Toggle("Tracers",       "Tracers",    "compass",          "Line from the bottom of the screen."),
+            Toggle("Chams",         "Chams",      "water_bucket",     "Fill bodies with colour."),
+            Toggle("Fullbright",    "Fullbright", "glowstone_dust",   "Flatten the lighting.", applyLight),
+            Toggle("No Fog",        "NoFog",      "glass_pane",       "Push the fog to the horizon.", applyLight),
+            Slider("Walk Speed",    "WalkSpeed",  "diamond_boots", 16, 200, 2, "Default is 16.", applyChar),
+            Slider("Jump Power",    "JumpPower",  "rabbit_foot",   50, 300, 5, "Default is 50.", applyChar),
+            Toggle("Infinite Jump", "InfJump",    "elytra",           "Jump again in mid air."),
+            Action("Apply Now",     "totem_of_undying", applyChar,    "Push speed and jump onto your character."),
+            Toggle("Anti Fling",    "AntiFling",  "shield",           "Clamp silly velocities."),
+            Toggle("Anti Void",     "AntiVoid",   "ender_pearl",      "Catch a fall out of the map."),
+            Toggle("God Mode",      "GodMode",    "golden_apple",     "Whatever the game allows."),
+            Action("Scripts",       "enchanted_book", function() end, "Infinite Yield and the rest. Not wired up yet."),
+            Action("Rejoin",        "oak_boat", function()
                 game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
             end, "Same place, fresh server."),
         } },

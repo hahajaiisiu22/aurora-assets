@@ -47,8 +47,8 @@ local MC = {}
 
 local Settings = {
     OpenKey   = Enum.KeyCode.E,
-    Height    = 0.86,       -- share of the screen the panel takes
-    Sounds    = true,
+    Height    = 0.60,       -- share of the screen the panel takes
+    Sounds    = false,
     Blur      = true,
     HeadTrack = true,
 }
@@ -74,12 +74,18 @@ local function ensureAssets()
     if type(writefile) ~= "function" or type(isfile) ~= "function" then return end
 
     local missing = {}
+    local artMissing = false
     for _, a in ipairs(ASSETS) do
-        if not isfile(a.path) then missing[#missing + 1] = a end
+        if not isfile(a.path) then
+            missing[#missing + 1] = a
+            if a.path == "aurora_art/mc_inventory.png" then artMissing = true end
+        end
     end
     if #missing == 0 then return end
 
-    assetNote = "fetching the panel art -- run the script again in a moment"
+    if artMissing then
+        assetNote = "fetching the panel art -- run the script again in a moment"
+    end
 
     task.spawn(function()
         local got, failed = 0, 0
@@ -599,8 +605,10 @@ local function buildAvatar(parent)
     local cam = new("Camera", {}, vp)
     vp.CurrentCamera = cam
     cam.FieldOfView = 32
+    -- in FRONT of him: LookVector is the way he faces, so the camera stands
+    -- out along it and looks back down it
     cam.CFrame = CFrame.lookAt(
-        base.Position + base.LookVector * -5.2 + Vector3.new(0, 0.3, 0),
+        base.Position + base.LookVector * 5.2 + Vector3.new(0, 0.3, 0),
         base.Position + Vector3.new(0, 0.05, 0))
 
     return vp
@@ -615,7 +623,9 @@ local function stepAvatar()
         local abs  = avatar.vp.AbsolutePosition
         local size = avatar.vp.AbsoluteSize
         local vp   = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
-        yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * 0.85
+        -- negative: the camera looks back along his facing, so a cursor to the
+        -- right has to turn him the other way round to look at it
+        yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * -0.85
         pitch = math.clamp((m.Y - (abs.Y + size.Y * 0.5)) / (vp.Y * 0.32), -1, 1) * 0.5
     end
 

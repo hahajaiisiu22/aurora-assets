@@ -450,10 +450,15 @@ local function ffaActive()
     if Config.FFA == "Off" then return false end
     local mine = LocalPlayer.Team
     if mine == nil then return true end
+
+    -- This had it backwards: somebody on a DIFFERENT team is exactly what a
+    -- team game looks like, and calling that free for all made every teammate
+    -- an enemy. What marks a team game is somebody on MY side -- so free for
+    -- all is when nobody is.
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Team ~= mine then return true end
+        if p ~= LocalPlayer and p.Team == mine then return false end
     end
-    return false
+    return true
 end
 
 local function isEnemy(model, ffa, wantBots, wantPlayers)

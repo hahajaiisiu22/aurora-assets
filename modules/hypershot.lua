@@ -925,22 +925,6 @@ local function rootPage()
     } }
 end
 
---============================================================================
--- minecraft skin hook
---  The skin itself lives in the loader, not here. This chunk already sits at
---  luau's 200 locals per function and the bridge needs eight more of them, so
---  all this module does is hand over the handful of things the skin reads.
---============================================================================
-
-_G.AURORA_SKIN = {
-    root    = rootPage,
-    config  = Config,
-    screen  = screen,
-    save    = function() pcall(saveConfig) end,
-    repaint = function() pcall(render) end,
-    unload  = function() if _G.__HYPERSHOT then _G.__HYPERSHOT() end end,
-}
-
 --------------------------------------------------------------------- render
 local function valueText(item)
     if item.kind == "sub" then return ">>>" end
@@ -1172,6 +1156,9 @@ end
 --============================================================================
 
 _G.Hypershot = {
+    Root   = rootPage,
+    Save   = saveConfig,
+    Screen = screen,
     Config = Config,
     Status = function() return statusText end,
     Target = function() return currentTarget end,

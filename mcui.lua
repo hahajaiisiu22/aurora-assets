@@ -877,6 +877,12 @@ local function makeSlot(parent, x, y, role, index)
 
     function slot.setItem(item)
         slot.item = item
+        if item and not item.icon then
+            icon.Visible, chip.Visible = false, false
+            count.Text = ""
+            glint.Visible = false
+            return
+        end
         if not item then
             icon.Visible, chip.Visible, glint.Visible = false, false, false
             count.Text = ""
@@ -1027,7 +1033,7 @@ local function refresh()
     sideSlots[1].setItem((spec.side or {})[1])
     sideSlots[2].setItem((spec.side or {})[2])
     resultSlot.setItem(spec.result)
-    bookSlot.setItem(spec.bookItem or { kind = "action", label = "Pages", icon = "book" })
+    bookSlot.setItem(spec.bookItem or { kind = "action", label = "Pages" })
 
     local page = spec.pages[currentPage]
     headerLabel.Text = string.format("%s  --  %s  (%d/%d)",

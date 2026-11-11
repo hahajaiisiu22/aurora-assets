@@ -105,7 +105,10 @@ local function ensureAssets()
                 and not isfolder(a.dir) then
                 pcall(makefolder, a.dir)
             end
-            local ok, body = pcall(function() return game:HttpGet(ASSET_HOST .. a.url, true) end)
+            -- the stamp is there because an http layer that caches by url will
+            -- happily hand back the old file forever
+            local url = ASSET_HOST .. a.url .. "?t=" .. tostring(os.time())
+            local ok, body = pcall(function() return game:HttpGet(url, true) end)
             -- a short body is an error page, not a png
             if ok and type(body) == "string" and #body >= a.min and pcall(writefile, a.path, body) then
                 got += 1
@@ -1421,8 +1424,9 @@ local demoSpec = {
             "Write the current settings to disk."),
     },
 
-    hotbar = { "Aimbot", "Silent Aim", "Player ESP", "Fullbright", "Walk Speed",
-               "Infinite Jump", "Kill Aura", "Chams", "No Fog", "Apply Now" },
+    -- empty on purpose: an item in the grid AND the hotbar looks duplicated.
+    -- Drag what you want down there, or shift-click it.
+    hotbar = {},
 }
 
 MC.mount(demoSpec)

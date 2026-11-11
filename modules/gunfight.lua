@@ -2701,22 +2701,6 @@ local function rootPage()
     } }
 end
 
---============================================================================
--- minecraft skin hook
---  The skin itself lives in the loader, not here. This chunk already sits at
---  luau's 200 locals per function and the bridge needs eight more of them, so
---  all this module does is hand over the handful of things the skin reads.
---============================================================================
-
-_G.AURORA_SKIN = {
-    root    = rootPage,
-    config  = Config,
-    screen  = screen,
-    save    = function() pcall(saveConfig) end,
-    repaint = function() pcall(render) end,
-    unload  = function() if _G.__AURORA then _G.__AURORA() end end,
-}
-
 paintTheme()
 pushPage(rootPage())
 
@@ -3354,6 +3338,9 @@ end))
 
 
 _G.Aurora = {
+    Root   = rootPage,
+    Save   = saveConfig,
+    Screen = screen,
     Config = Config,
     Status = function() return statusText end,
     Target = function() return currentTarget, currentPart end,

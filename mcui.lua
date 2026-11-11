@@ -140,14 +140,16 @@ local ITEM_ATLAS  = diskAsset("aurora_art/mc_items.png")
 
 --============================================================================
 -- item sheet
---  25 vanilla item textures packed into one 80x80 png, five across. They are
---  the real 16x16 originals -- the files he downloaded were 8x nearest
---  upscales, so scaling them back down restored the exact pixels. One image
---  means one download; a slot takes its own 16x16 window out of it with
---  ImageRectOffset, and Pixelated resampling blows it back up crisp.
+--  25 vanilla item textures packed into one 640x640 png, five across, at the
+--  size they arrived. Nineteen of them are 16x16 textures blown up 8x; the
+--  other six -- chest, tnt, command block, redstone, shield, enchanted book --
+--  are 3D block RENDERS with real shading in every pixel. Squashing those to
+--  16x16 is what turned the tnt to mush, so nothing is resized any more: each
+--  cell is the original file, and only the flat textures get pixel sampling.
 --============================================================================
 
 local ATLAS_COLS = 5
+local ATLAS_CELL = 128
 local ATLAS = {
     ["arrow"] = 0,
     ["barrier"] = 1,
@@ -174,6 +176,19 @@ local ATLAS = {
     ["tnt"] = 22,
     ["totem_of_undying"] = 23,
     ["water_bucket"] = 24,
+}
+
+-- six of them are not flat textures at all: chest, tnt, the command block,
+-- redstone, the shield and the enchanted book ship as 128px 3D renders, so
+-- they get smooth sampling. Everything else is a true 16x16 texture and
+-- stays pixelated.
+local SMOOTH = {
+    ["chest"] = true,
+    ["command_block"] = true,
+    ["enchanted_book"] = true,
+    ["redstone_block"] = true,
+    ["shield"] = true,
+    ["tnt"] = true,
 }
 
 -- the old hand drawn names still work, so a module written against them does
@@ -430,9 +445,11 @@ local function applyIcon(img, chip, name)
     if ITEM_ATLAS and idx then
         img.Image = ITEM_ATLAS
         pcall(function() img.ImageContent = Content.fromUri(ITEM_ATLAS) end)
-        img.ImageRectOffset = Vector2.new((idx % ATLAS_COLS) * 16,
-            math.floor(idx / ATLAS_COLS) * 16)
-        img.ImageRectSize = Vector2.new(16, 16)
+        img.ImageRectOffset = Vector2.new((idx % ATLAS_COLS) * ATLAS_CELL,
+            math.floor(idx / ATLAS_COLS) * ATLAS_CELL)
+        img.ImageRectSize = Vector2.new(ATLAS_CELL, ATLAS_CELL)
+        img.ResampleMode = SMOOTH[key] and Enum.ResamplerMode.Default
+            or Enum.ResamplerMode.Pixelated
         img.Visible = true
         if chip then chip.Visible = false end
         return true
@@ -516,6 +533,10 @@ local hotbar      = {}
 
 local GRID_SLOTS = 40
 local HOT_SLOTS  = 10
+-- the last four slots of the bottom row are the utility corner: unload, the
+-- console, presets and save. They never scroll away with the page.
+local UTIL_FIRST = GRID_SLOTS - 3
+local PAGE_SLOTS = UTIL_FIRST - 1
 
 local function cfg() return (spec and spec.config) or {} end
 
@@ -975,14 +996,17 @@ end
 local function refresh()
     local items = pageItems(currentPage)
     local total = #items
-    local maxOff = math.max(0, math.ceil((total - GRID_SLOTS) / 10) * 10)
+    local maxOff = math.max(0, math.ceil((total - PAGE_SLOTS) / 10) * 10)
     gridOffset = math.clamp(gridOffset, 0, maxOff)
 
-    for n = 1, GRID_SLOTS do gridSlots[n].setItem(items[n + gridOffset]) end
+    for n = 1, PAGE_SLOTS do gridSlots[n].setItem(items[n + gridOffset]) end
+    for i = 1, 4 do
+        gridSlots[UTIL_FIRST + i - 1].setItem((spec.utilities or {})[i])
+    end
     for i = 1, HOT_SLOTS do hotSlots[i].setItem(hotbar[i]) end
     for i = 1, 4 do
         armourSlots[i].setItem((spec.armour or {})[i])
-        craftSlots[i].setItem((spec.presets or {})[i])
+        craftSlots[i].setItem(nil)
     end
     sideSlots[1].setItem((spec.side or {})[1])
     sideSlots[2].setItem((spec.side or {})[2])
@@ -995,9 +1019,9 @@ local function refresh()
         string.upper((page and page.name) or "?"),
         currentPage, #spec.pages)
 
-    noteLabel.Text = (total > GRID_SLOTS)
+    noteLabel.Text = (total > PAGE_SLOTS)
         and string.format("%d-%d of %d   scroll the grid for more",
-            gridOffset + 1, math.min(total, gridOffset + GRID_SLOTS), total)
+            gridOffset + 1, math.min(total, gridOffset + PAGE_SLOTS), total)
         or assetNote
 end
 
@@ -1109,6 +1133,7 @@ local function wireSlot(slot)
     slot.btn.MouseButton1Down:Connect(function()
         if not slot.item then return end
         if slot.role ~= "grid" and slot.role ~= "hot" then return end
+        if slot.role == "grid" and slot.index >= UTIL_FIRST then return end
         dragging = { item = slot.item, from = slot }
         if applyIcon(dragIcon, nil, slot.item.icon) then dragIcon.Visible = true end
     end)
@@ -1375,7 +1400,7 @@ local demoSpec = {
     -- the armour column, the pair beside the preview and the result slot stay
     -- empty: they are armour and a crafting output, not a home for features.
     -- The 2x2 is the utility block instead.
-    presets = {
+    utilities = {
         Action("Unload",  "barrier",       function() MC.unload() end,
             "Remove the menu, the hooks and this panel."),
         Action("Console", "command_block", function() end,

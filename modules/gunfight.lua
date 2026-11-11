@@ -546,280 +546,287 @@ local function keyDown()
     return UserInputService:IsKeyDown(e)
 end
 
-local function readyToLock()
-    if not Config.AimEnabled then return false end
+-- buildLoadout is a function so its locals land in a budget of its own: the
+-- main chunk is at luau's 200 local limit and roblox enforces it.
+local AIM_RENDER, statusText, applyRate, applyLoadout, originalRates, TAP_SECONDS, ONE_SHOT_RPM_CAP
+local function buildLoadout()
+    local function readyToLock()
+        if not Config.AimEnabled then return false end
 
-    local char = LocalPlayer.Character
-    if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not (hum and hum.Health > 0) then return false end
+        local char = LocalPlayer.Character
+        if not char then return false end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not (hum and hum.Health > 0) then return false end
 
-    local vm = workspace:FindFirstChild("ViewModel")
-    if not (vm and vm:FindFirstChild("Gun")) then return false end
-
-    if Config.Mode == "Always" then return true end
-    if Config.Mode == "Toggle" then return toggleState end
-    return keyDown()
-end
-
-local AIM_RENDER = "aurora_aim"
-local statusText = "idle"
-
---  SILENT. vortex.lua:5749 sends the server
---      INVK("Fire", gun, t, CFrame.new(Flame.p, Flame.p + Camera.LookVector), ...)
---  The direction is the camera, but the ORIGIN is workspace.ViewModel.Gun.Flame --
---  a client-side viewmodel part, anchored, no joints. Park it at
---  target - cameraLook * Standoff and the server's own trace starts beside the
---  body and walks into it, whatever the camera is pointed at.
---
---  Two timing facts make it work. WeaponRender(200) re-places the muzzle every
---  single frame, so writes must land after it. And Fire() yields on
---  GlobalAPI.RealWait, which is RunService.Stepped:wait(), so the shot is emitted
---  during Stepped -- before the render bindings -- meaning the write it reads is
---  the previous frame's Heartbeat one. All three phases are covered below.
---
---  Measured against the server's own LastDamager attribute: hits confirmed at up
---  to 53.7 degrees off the crosshair.
-
-local function aimStep()
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-
-    if not readyToLock() then
-        currentTarget, currentPart = nil, nil
-        statusText = Config.AimEnabled and "idle" or "off"
-        return
-    end
-
-    local model, part = acquire(cam)
-    if not (model and part) then
-        statusText = "no target"
-        return
-    end
-
-    local origin = cam.CFrame.Position
-    local speed, cart = projectileSpeed()
-    local dist = (origin - part.Position).Magnitude
-    local angle = math.deg(math.acos(math.clamp(
-        cam.CFrame.LookVector:Dot((part.Position - origin).Unit), -1, 1)))
-
-    if Config.Method == "Silent" then
         local vm = workspace:FindFirstChild("ViewModel")
-        local gun = vm and vm:FindFirstChild("Gun")
-        local flame = gun and gun:FindFirstChild("Flame")
-        if not flame then
-            statusText = "no muzzle"
+        if not (vm and vm:FindFirstChild("Gun")) then return false end
+
+        if Config.Mode == "Always" then return true end
+        if Config.Mode == "Toggle" then return toggleState end
+        return keyDown()
+    end
+
+    AIM_RENDER = "aurora_aim"
+    statusText = "idle"
+
+    --  SILENT. vortex.lua:5749 sends the server
+    --      INVK("Fire", gun, t, CFrame.new(Flame.p, Flame.p + Camera.LookVector), ...)
+    --  The direction is the camera, but the ORIGIN is workspace.ViewModel.Gun.Flame --
+    --  a client-side viewmodel part, anchored, no joints. Park it at
+    --  target - cameraLook * Standoff and the server's own trace starts beside the
+    --  body and walks into it, whatever the camera is pointed at.
+    --
+    --  Two timing facts make it work. WeaponRender(200) re-places the muzzle every
+    --  single frame, so writes must land after it. And Fire() yields on
+    --  GlobalAPI.RealWait, which is RunService.Stepped:wait(), so the shot is emitted
+    --  during Stepped -- before the render bindings -- meaning the write it reads is
+    --  the previous frame's Heartbeat one. All three phases are covered below.
+    --
+    --  Measured against the server's own LastDamager attribute: hits confirmed at up
+    --  to 53.7 degrees off the crosshair.
+
+    local function aimStep()
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+
+        if not readyToLock() then
+            currentTarget, currentPart = nil, nil
+            statusText = Config.AimEnabled and "idle" or "off"
             return
         end
 
-        -- travel time is ~0 from a muzzle parked beside the body, so no lead
-        local look = cam.CFrame.LookVector
-        local at = part.Position - look * Config.Standoff
-        flame.CFrame = CFrame.new(at, at + look)
-
-        statusText = string.format("[silent] %s%s %s %.0fst  %.0f deg off aim  %s @%.0f",
-            isBot(model) and "[bot] " or "", model.Name, part.Name, dist, angle, cart, speed)
-        return
-    end
-
-    -- LOCK. A real camera turn, for when you want the view to follow.
-    local aimAt, wantLead, usedLead = leadPoint(part, origin, speed)
-    local flat = coneStuds(CFrame.lookAt(origin, aimAt), part)
-    statusText = string.format("[lock] %s%s %s %.0fst cone %.1f%s lead %.1f/%.1f %s @%.0f",
-        isBot(model) and "[bot] " or "", model.Name, part.Name, dist,
-        flat, (flat < Config.DamageCone) and "*" or "!", usedLead, wantLead, cart, speed)
-
-    local goal  = CFrame.lookAt(origin, aimAt)
-    local alpha = math.clamp(Config.Smoothness, 0.01, 1)
-    cam.CFrame = (alpha >= 1) and goal or cam.CFrame:Lerp(goal, alpha)
-end
-
-pcall(function() RunService:UnbindFromRenderStep(AIM_RENDER) end)
-RunService:BindToRenderStep(AIM_RENDER, Enum.RenderPriority.Camera.Value + 20, aimStep)
-track(RunService.Heartbeat:Connect(aimStep))
-track(RunService.Stepped:Connect(aimStep))
-
---============================================================================
--- weapon + skin grants
---  Vortex.Inventory entry: StringValue named after the gun, value "<mag>:<reserve>",
---  attributes Steadiness / Mobility, optional child StringValue "Camo"
---  (vortex.lua:8646-8657).
---============================================================================
-
-local applyRate = function() end     -- bound to applyFireRate once it is defined
-
-local function setCamoOn(entry, camo)
-    local existing = entry:FindFirstChild("Camo")
-    if camo == "None" or camo == nil then
-        if existing then existing:Destroy() end
-        return
-    end
-    if not existing then
-        existing = Instance.new("StringValue")
-        existing.Name = "Camo"
-        existing.Parent = entry
-    end
-    existing.Value = camo
-end
-
--- Slot order is just child order -- the engine cycles with
--- script.Inventory:GetChildren()[n] (vortex.lua:9694). The old code wrote one
--- slot at a time, and because a new entry is appended at the END, granting the
--- primary first left the children as [old secondary, new primary]; the secondary
--- pass then destroyed index 2, which was the primary that had just been made.
--- Both dropdowns landed on the same slot and the order came out backwards. So
--- the folder is rebuilt in one pass instead, primary parented first.
-local function makeEntry(gunName, camo)
-    local stock = stockAmmo(gunName) or { clip = 30, reserve = 150 }
-
-    local entry = Instance.new("StringValue")
-    entry.Name = gunName
-    entry:SetAttribute("Steadiness", 1)
-    entry:SetAttribute("Mobility", 1)
-    writeAmmo(entry, stock.clip, stock.clip, true)   -- "<clip>:<clip>NR", vortex.lua:8656
-
-    if camo and camo ~= "None" then
-        local c = Instance.new("StringValue")
-        c.Name = "Camo"
-        c.Value = camo
-        c.Parent = entry
-    end
-
-    entry.Parent = InventoryF
-    return entry
-end
-
-local function applyLoadout()
-    local before, camoOf = {}, {}
-    for _, e in ipairs(InventoryF:GetChildren()) do
-        if e:IsA("StringValue") then
-            local c = e:FindFirstChild("Camo")
-            camoOf[e.Name] = c and c.Value or nil
-            table.insert(before, e.Name)
+        local model, part = acquire(cam)
+        if not (model and part) then
+            statusText = "no target"
+            return
         end
+
+        local origin = cam.CFrame.Position
+        local speed, cart = projectileSpeed()
+        local dist = (origin - part.Position).Magnitude
+        local angle = math.deg(math.acos(math.clamp(
+            cam.CFrame.LookVector:Dot((part.Position - origin).Unit), -1, 1)))
+
+        if Config.Method == "Silent" then
+            local vm = workspace:FindFirstChild("ViewModel")
+            local gun = vm and vm:FindFirstChild("Gun")
+            local flame = gun and gun:FindFirstChild("Flame")
+            if not flame then
+                statusText = "no muzzle"
+                return
+            end
+
+            -- travel time is ~0 from a muzzle parked beside the body, so no lead
+            local look = cam.CFrame.LookVector
+            local at = part.Position - look * Config.Standoff
+            flame.CFrame = CFrame.new(at, at + look)
+
+            statusText = string.format("[silent] %s%s %s %.0fst  %.0f deg off aim  %s @%.0f",
+                isBot(model) and "[bot] " or "", model.Name, part.Name, dist, angle, cart, speed)
+            return
+        end
+
+        -- LOCK. A real camera turn, for when you want the view to follow.
+        local aimAt, wantLead, usedLead = leadPoint(part, origin, speed)
+        local flat = coneStuds(CFrame.lookAt(origin, aimAt), part)
+        statusText = string.format("[lock] %s%s %s %.0fst cone %.1f%s lead %.1f/%.1f %s @%.0f",
+            isBot(model) and "[bot] " or "", model.Name, part.Name, dist,
+            flat, (flat < Config.DamageCone) and "*" or "!", usedLead, wantLead, cart, speed)
+
+        local goal  = CFrame.lookAt(origin, aimAt)
+        local alpha = math.clamp(Config.Smoothness, 0.01, 1)
+        cam.CFrame = (alpha >= 1) and goal or cam.CFrame:Lerp(goal, alpha)
     end
 
-    local wantCamo = (Config.ForceCamo ~= "None") and Config.ForceCamo or nil
+    pcall(function() RunService:UnbindFromRenderStep(AIM_RENDER) end)
+    RunService:BindToRenderStep(AIM_RENDER, Enum.RenderPriority.Camera.Value + 20, aimStep)
+    track(RunService.Heartbeat:Connect(aimStep))
+    track(RunService.Stepped:Connect(aimStep))
 
-    -- camo only: leave the guns where they are
-    if Config.ForcePrimary == "None" and Config.ForceSecondary == "None" then
-        if not wantCamo then return false, "nothing selected" end
+    --============================================================================
+    -- weapon + skin grants
+    --  Vortex.Inventory entry: StringValue named after the gun, value "<mag>:<reserve>",
+    --  attributes Steadiness / Mobility, optional child StringValue "Camo"
+    --  (vortex.lua:8646-8657).
+    --============================================================================
+
+    applyRate = function() end     -- bound to applyFireRate once it is defined
+
+    local function setCamoOn(entry, camo)
+        local existing = entry:FindFirstChild("Camo")
+        if camo == "None" or camo == nil then
+            if existing then existing:Destroy() end
+            return
+        end
+        if not existing then
+            existing = Instance.new("StringValue")
+            existing.Name = "Camo"
+            existing.Parent = entry
+        end
+        existing.Value = camo
+    end
+
+    -- Slot order is just child order -- the engine cycles with
+    -- script.Inventory:GetChildren()[n] (vortex.lua:9694). The old code wrote one
+    -- slot at a time, and because a new entry is appended at the END, granting the
+    -- primary first left the children as [old secondary, new primary]; the secondary
+    -- pass then destroyed index 2, which was the primary that had just been made.
+    -- Both dropdowns landed on the same slot and the order came out backwards. So
+    -- the folder is rebuilt in one pass instead, primary parented first.
+    local function makeEntry(gunName, camo)
+        local stock = stockAmmo(gunName) or { clip = 30, reserve = 150 }
+
+        local entry = Instance.new("StringValue")
+        entry.Name = gunName
+        entry:SetAttribute("Steadiness", 1)
+        entry:SetAttribute("Mobility", 1)
+        writeAmmo(entry, stock.clip, stock.clip, true)   -- "<clip>:<clip>NR", vortex.lua:8656
+
+        if camo and camo ~= "None" then
+            local c = Instance.new("StringValue")
+            c.Name = "Camo"
+            c.Value = camo
+            c.Parent = entry
+        end
+
+        entry.Parent = InventoryF
+        return entry
+    end
+
+    applyLoadout = function()
+        local before, camoOf = {}, {}
         for _, e in ipairs(InventoryF:GetChildren()) do
-            if e:IsA("StringValue") then setCamoOn(e, wantCamo) end
+            if e:IsA("StringValue") then
+                local c = e:FindFirstChild("Camo")
+                camoOf[e.Name] = c and c.Value or nil
+                table.insert(before, e.Name)
+            end
+        end
+
+        local wantCamo = (Config.ForceCamo ~= "None") and Config.ForceCamo or nil
+
+        -- camo only: leave the guns where they are
+        if Config.ForcePrimary == "None" and Config.ForceSecondary == "None" then
+            if not wantCamo then return false, "nothing selected" end
+            for _, e in ipairs(InventoryF:GetChildren()) do
+                if e:IsA("StringValue") then setCamoOn(e, wantCamo) end
+            end
+            return true
+        end
+
+        local primary   = (Config.ForcePrimary   ~= "None") and Config.ForcePrimary   or before[1]
+        local secondary = (Config.ForceSecondary ~= "None") and Config.ForceSecondary or before[2]
+
+        if primary   and not Weapons:FindFirstChild(primary)   then return false, "unknown primary"   end
+        if secondary and not Weapons:FindFirstChild(secondary) then return false, "unknown secondary" end
+
+        for _, e in ipairs(InventoryF:GetChildren()) do
+            if e:IsA("StringValue") then e:Destroy() end
+        end
+
+        if primary   then makeEntry(primary,   wantCamo or camoOf[primary])   end
+        if secondary then makeEntry(secondary, wantCamo or camoOf[secondary]) end
+
+        refreshInventoryHooks()
+        applyRate()                 -- the new guns were not in the folder when it last ran
+        return true
+    end
+
+    -- The engine rebuilds Vortex.Inventory from the server loadout at round start
+    -- and at every respawn, which wipes whatever was granted before. A single
+    -- apply on spawn loses that race whenever the rebuild lands after it, which is
+    -- why the loadout "didn't save" -- it was applied, then overwritten. So the
+    -- folder is watched instead: any time its children stop matching the forced
+    -- loadout, it is applied again. applying guards the churn our own rebuild makes.
+    local applying = false
+    local enforceQueued = false
+
+    local function loadoutMatches()
+        local want = {}
+        if Config.ForcePrimary   ~= "None" then want[#want + 1] = Config.ForcePrimary end
+        if Config.ForceSecondary ~= "None" then want[#want + 1] = Config.ForceSecondary end
+        if #want == 0 then return true end
+
+        for _, name in ipairs(want) do
+            local e = InventoryF:FindFirstChild(name)
+            if not e or not e:IsA("StringValue") then return false end
+            if Config.ForceCamo ~= "None" then
+                local c = e:FindFirstChild("Camo")
+                if not c or c.Value ~= Config.ForceCamo then return false end
+            end
         end
         return true
     end
 
-    local primary   = (Config.ForcePrimary   ~= "None") and Config.ForcePrimary   or before[1]
-    local secondary = (Config.ForceSecondary ~= "None") and Config.ForceSecondary or before[2]
+    -- coalesced: a rebuild fires a burst of ChildAdded, and one apply answers all of them
+    local function enforceLoadout()
+        if applying or enforceQueued then return end
+        if not Config.ApplyOnSpawn then return end
 
-    if primary   and not Weapons:FindFirstChild(primary)   then return false, "unknown primary"   end
-    if secondary and not Weapons:FindFirstChild(secondary) then return false, "unknown secondary" end
+        enforceQueued = true
+        task.delay(0.35, function()
+            enforceQueued = false
+            if applying or not Config.ApplyOnSpawn then return end
+            if loadoutMatches() then return end
 
-    for _, e in ipairs(InventoryF:GetChildren()) do
-        if e:IsA("StringValue") then e:Destroy() end
+            applying = true
+            pcall(applyLoadout)
+            applying = false
+        end)
     end
 
-    if primary   then makeEntry(primary,   wantCamo or camoOf[primary])   end
-    if secondary then makeEntry(secondary, wantCamo or camoOf[secondary]) end
+    track(InventoryF.ChildAdded:Connect(enforceLoadout))
+    track(InventoryF.ChildRemoved:Connect(enforceLoadout))
 
-    refreshInventoryHooks()
-    applyRate()                 -- the new guns were not in the folder when it last ran
-    return true
-end
-
--- The engine rebuilds Vortex.Inventory from the server loadout at round start
--- and at every respawn, which wipes whatever was granted before. A single
--- apply on spawn loses that race whenever the rebuild lands after it, which is
--- why the loadout "didn't save" -- it was applied, then overwritten. So the
--- folder is watched instead: any time its children stop matching the forced
--- loadout, it is applied again. applying guards the churn our own rebuild makes.
-local applying = false
-local enforceQueued = false
-
-local function loadoutMatches()
-    local want = {}
-    if Config.ForcePrimary   ~= "None" then want[#want + 1] = Config.ForcePrimary end
-    if Config.ForceSecondary ~= "None" then want[#want + 1] = Config.ForceSecondary end
-    if #want == 0 then return true end
-
-    for _, name in ipairs(want) do
-        local e = InventoryF:FindFirstChild(name)
-        if not e or not e:IsA("StringValue") then return false end
-        if Config.ForceCamo ~= "None" then
-            local c = e:FindFirstChild("Camo")
-            if not c or c.Value ~= Config.ForceCamo then return false end
-        end
-    end
-    return true
-end
-
--- coalesced: a rebuild fires a burst of ChildAdded, and one apply answers all of them
-local function enforceLoadout()
-    if applying or enforceQueued then return end
-    if not Config.ApplyOnSpawn then return end
-
-    enforceQueued = true
-    task.delay(0.35, function()
-        enforceQueued = false
-        if applying or not Config.ApplyOnSpawn then return end
-        if loadoutMatches() then return end
-
+    -- the rebuild can also land in silence, with the folder already holding the
+    -- right names but the wrong ammo, so spawn is swept for a few seconds too
+    track(LocalPlayer.CharacterAdded:Connect(function()
+        if not Config.ApplyOnSpawn then return end
+        task.wait(2.5)   -- let the engine build its own loadout first
         applying = true
         pcall(applyLoadout)
         applying = false
-    end)
+
+        for _ = 1, 8 do
+            task.wait(1)
+            if not Config.ApplyOnSpawn then return end
+            enforceLoadout()
+        end
+    end))
+
+    --============================================================================
+    -- fire rate + ammo
+    --  FireRate is RPM, shot delay is 60/FireRate, cached into v19 at equip time
+    --  (vortex.lua:186) and read per shot at vortex.lua:4270 -- so a write only takes
+    --  on the next equip. Swap1/Swap2 are One/Two, Swap is MouseWheel.
+    --
+    --  Ammo never writes ClipSize or StoredAmmo. Restock (vortex.lua:3730) reports the
+    --  loaded count to the server with INVK("Action", "Reload", v381) and the server
+    --  checks it against its own ClipSize, so a raised magazine makes every reload
+    --  illegal and kills damage until you rejoin. Only the reserve half of the
+    --  inventory StringValue moves, pinned every frame so each swap refills it.
+    --============================================================================
+
+    originalRates = {}
+
+    --  ONE SHOT. There is no damage override and there cannot be one, for the same
+    --  reason there is no ammo override: the server scores a hit from ITS copy of
+    --  Weapons.<gun>.Variables.MaxDamage, and a client write to ReplicatedStorage
+    --  never reaches it. INVK("Fire", ...) carries no damage field either -- gun
+    --  name, clock, muzzle CFrame, nothing else (vortex.lua:5749) -- and the packet
+    --  cannot be forged, because Network signs every call and traps any thread that
+    --  requires it.
+    --
+    --  What can be done is land the damage in one pull instead of one round. The
+    --  gun's real MaxDamage is readable, so the rounds needed are just
+    --  ceil(want / MaxDamage), and the cadence that fits them inside a single tap is
+    --  rounds / TAP_SECONDS * 60. Every round is a real packet the game sends itself,
+    --  against ammunition the server already issued, so nothing is invented.
+    TAP_SECONDS = 0.12     -- how long a tap holds the trigger, measured by ear
+    ONE_SHOT_RPM_CAP = 3000
 end
 
-track(InventoryF.ChildAdded:Connect(enforceLoadout))
-track(InventoryF.ChildRemoved:Connect(enforceLoadout))
-
--- the rebuild can also land in silence, with the folder already holding the
--- right names but the wrong ammo, so spawn is swept for a few seconds too
-track(LocalPlayer.CharacterAdded:Connect(function()
-    if not Config.ApplyOnSpawn then return end
-    task.wait(2.5)   -- let the engine build its own loadout first
-    applying = true
-    pcall(applyLoadout)
-    applying = false
-
-    for _ = 1, 8 do
-        task.wait(1)
-        if not Config.ApplyOnSpawn then return end
-        enforceLoadout()
-    end
-end))
-
---============================================================================
--- fire rate + ammo
---  FireRate is RPM, shot delay is 60/FireRate, cached into v19 at equip time
---  (vortex.lua:186) and read per shot at vortex.lua:4270 -- so a write only takes
---  on the next equip. Swap1/Swap2 are One/Two, Swap is MouseWheel.
---
---  Ammo never writes ClipSize or StoredAmmo. Restock (vortex.lua:3730) reports the
---  loaded count to the server with INVK("Action", "Reload", v381) and the server
---  checks it against its own ClipSize, so a raised magazine makes every reload
---  illegal and kills damage until you rejoin. Only the reserve half of the
---  inventory StringValue moves, pinned every frame so each swap refills it.
---============================================================================
-
-local originalRates = {}
-
---  ONE SHOT. There is no damage override and there cannot be one, for the same
---  reason there is no ammo override: the server scores a hit from ITS copy of
---  Weapons.<gun>.Variables.MaxDamage, and a client write to ReplicatedStorage
---  never reaches it. INVK("Fire", ...) carries no damage field either -- gun
---  name, clock, muzzle CFrame, nothing else (vortex.lua:5749) -- and the packet
---  cannot be forged, because Network signs every call and traps any thread that
---  requires it.
---
---  What can be done is land the damage in one pull instead of one round. The
---  gun's real MaxDamage is readable, so the rounds needed are just
---  ceil(want / MaxDamage), and the cadence that fits them inside a single tap is
---  rounds / TAP_SECONDS * 60. Every round is a real packet the game sends itself,
---  against ammunition the server already issued, so nothing is invented.
-local TAP_SECONDS = 0.12     -- how long a tap holds the trigger, measured by ear
-local ONE_SHOT_RPM_CAP = 3000
+buildLoadout()
 
 local function oneShotPlan(gunName)
     if (Config.OneShot or 0) <= 0 then return nil end
@@ -837,533 +844,547 @@ local function oneShotPlan(gunName)
     return rpm, rounds, md.Value, clip and clip.Value or nil
 end
 
-local function applyFireRate()
-    for _, entry in ipairs(InventoryF:GetChildren()) do
-        local folder = Weapons:FindFirstChild(entry.Name)
-        local vars = folder and folder:FindFirstChild("Variables")
-        local fr = vars and vars:FindFirstChild("FireRate")
-        if fr then
-            if originalRates[entry.Name] == nil then originalRates[entry.Name] = fr.Value end
-
-            local osRPM = oneShotPlan(entry.Name)
-            if osRPM then
-                -- One Shot owns the cadence while it is set, Rate tab or not
-                fr.Value = osRPM
-            elseif Config.RateEnabled then
-                fr.Value = math.floor(math.min(originalRates[entry.Name] * Config.RateMul, Config.RateCap))
-            else
-                fr.Value = originalRates[entry.Name]
-            end
-        end
-    end
-end
-
-local function oneShotReadout()
-    if (Config.OneShot or 0) <= 0 then return "off" end
-
-    local gun = equipped
-    if not gun then return "no weapon equipped" end
-
-    local rpm, rounds, per, clip = oneShotPlan(gun)
-    if not rpm then
-        local folder = Weapons:FindFirstChild(gun)
-        local vars = folder and folder:FindFirstChild("Variables")
-        local md = vars and vars:FindFirstChild("MaxDamage")
-        if md then
-            return string.format("%s hits %d -- one round already covers %d", gun, md.Value, Config.OneShot)
-        end
-        return gun .. " has no damage value"
-    end
-
-    local warn = ""
-    if clip and rounds > clip then warn = string.format("  !mag holds %d", clip) end
-    return string.format("%s %ddmg x%d rounds @%d rpm%s", gun, per, rounds, rpm, warn)
-end
-
-applyRate = applyFireRate
-
---  No ammo override exists any more, and none can be added back.
---
---  The reserve is server-counted the same way the magazine is. Pinning it to 300
---  killed the TT30 first because its stock reserve is 45 against the M16A1's 125:
---  nine-round magazine, five reloads, and the server's pool was empty while the
---  client kept handing out more. From that point the client fires rounds the
---  server never issued and hit credit stops for the rest of the round, which is
---  why the rifle kept working through the same test and the pistol did not, and
---  why switching the toggle off changed nothing. The divergence is a tally, not a
---  setting -- only a rejoin clears it.
---
---  So the rule for this whole file: never hand the client a round the server did
---  not issue. The guard below holds every ammo figure at stock instead, and the
---  reload is made less painful through the engine's own perk rather than by
---  inventing ammunition.
-
---  FasterReloads is a LocalPlayer attribute read at equip (vortex.lua:8987). When
---  it is above zero the attachment string becomes "Fast Mags" and RunAnimation
---  plays every Reload / EmptyReload / Load / Charge frame set at 1.2x
---  (vortex.lua:762). Pure viewmodel animation -- no packet, no round, no tally.
-local function applyFastReload()
-    local want = Config.FastReload and 1 or 0
-    if (LocalPlayer:GetAttribute("FasterReloads") or 0) ~= want then
-        LocalPlayer:SetAttribute("FasterReloads", want)
-    end
-end
-
-track(RunService.Heartbeat:Connect(applyFastReload))
-
--- Undo an older build of this script that wrote ClipSize / StoredAmmo straight
--- into ReplicatedStorage.Weapons. Those are what the server validates reloads
--- against, so a stomped value kills damage for the rest of the session.
--- Variables.Ammo is never written by this script, so it is the stock figure.
-local function repairStompedAmmo()
-    local fixed = {}
-    for _, folder in ipairs(Weapons:GetChildren()) do
-        local vars = folder:FindFirstChild("Variables")
-        local twin = vars and vars:FindFirstChild("Ammo")
-        local clip = vars and vars:FindFirstChild("ClipSize")
-        if twin and clip and clip.Value ~= twin.Value then
-            clip.Value = twin.Value
-            table.insert(fixed, folder.Name)
-        end
-    end
-    for _, entry in ipairs(InventoryF:GetChildren()) do
-        if entry:IsA("StringValue") then
-            local stock = stockAmmo(entry.Name)
-            local mag, reserve, nr = parseAmmo(entry.Value)
-            if stock and mag and mag > stock.clip then
-                writeAmmo(entry, stock.clip, reserve, nr)
-            end
-        end
-    end
-    return fixed
-end
-
-local function restoreRates()
-    for name, rpm in pairs(originalRates) do
-        local folder = Weapons:FindFirstChild(name)
-        local vars = folder and folder:FindFirstChild("Variables")
-        local fr = vars and vars:FindFirstChild("FireRate")
-        if fr then fr.Value = rpm end
-    end
-end
-
-pcall(applyFireRate)                       -- seeds originalRates with the stock rpm
-local stompRepaired = repairStompedAmmo()
-
---  Measured cadence. Vortex.Audio.Click:Play() runs once per shot on the line
---  straight after the Fire packet (vortex.lua:5751), so Sound.Played is an exact
---  per-shot tick. Keeps the last 24 and reports over the span they cover, which
---  makes a FireRate write either show up as a number or not at all.
-local shotTimes = {}
-local measuredRPM = 0
-local lastShot = 0
-
-local shotsFired, roundsSpent, lastHudMag = 0, 0, nil
-local ledgerDrift, ledgerTripped = 0, false
-
--- Second, independent cadence: the HUD's own round counter. Sound.Played can be
--- dropped when Play() is called again while the clip is still running, so the
--- counter is the measure that cannot lie about how many rounds actually left.
-local roundTimes = {}
-local roundRPM = 0
-local lastRound = 0
-
-local function pushRound(n)
-    local now = os.clock()
-    lastRound = now
-    for _ = 1, math.min(n, 4) do table.insert(roundTimes, now) end
-    while #roundTimes > 24 do table.remove(roundTimes, 1) end
-    while #roundTimes > 2 and (now - roundTimes[1]) > 1.25 do table.remove(roundTimes, 1) end
-
-    local c = #roundTimes
-    local span = roundTimes[c] - roundTimes[1]
-    roundRPM = (c > 1 and span > 0) and ((c - 1) / span * 60) or 0
-end
-
-do
-    local clickSound = VortexRoot:FindFirstChild("Audio")
-    clickSound = clickSound and clickSound:FindFirstChild("Click")
-    if clickSound then
-        track(clickSound.Played:Connect(function()
-            local now = os.clock()
-            lastShot = now
-            shotsFired += 1
-            table.insert(shotTimes, now)
-            if #shotTimes > 24 then table.remove(shotTimes, 1) end
-
-            -- drop anything older than a second so bursts do not average with idle
-            while #shotTimes > 2 and (now - shotTimes[1]) > 1.25 do
-                table.remove(shotTimes, 1)
-            end
-
-            local n = #shotTimes
-            local span = shotTimes[n] - shotTimes[1]
-            measuredRPM = (n > 1 and span > 0) and ((n - 1) / span * 60) or 0
-        end))
-    end
-end
-
---  LEDGER. The HUD's magazine counter is the engine's own round count, built
---  from three digit labels under PlayerGui.HUD.Ammo.Mag (1 = hundreds). Every
---  Click play is one Fire packet leaving; every step down in that counter is one
---  round actually spent. While those two move together the server's tally and
---  ours agree. The moment packets outrun rounds the server is being asked to
---  credit ammunition it never issued, which is the state that stops damage for
---  the rest of the round -- so the rate goes back to stock the instant it opens,
---  before a match is lost to it rather than after.
-local LEDGER_SLACK = 3
-
-local function hudMag()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local hud = gui and gui:FindFirstChild("HUD")
-    local ammo = hud and hud:FindFirstChild("Ammo")
-    local mag = ammo and ammo:FindFirstChild("Mag")
-    if not mag then return nil end
-
-    local n = 0
-    for i = 1, 3 do
-        local d = mag:FindFirstChild(tostring(i))
-        local digit = d and tonumber(d.Text)
-        if not digit then return nil end
-        n = n * 10 + digit
-    end
-    return n
-end
-
--- A swap from a 22-round rifle to a 9-round pistol drops the counter by 13 in one
--- frame, which the first version booked as thirteen rounds fired. Nothing fires
--- that fast: 1200 rpm is 20 rounds a second, a third of a round per frame, so any
--- single-frame fall past LEDGER_JUMP is the counter being replaced rather than
--- spent. A weapon change resets it for the same reason.
-local LEDGER_JUMP = 3
-local ledgerWeapon = nil
-
-local lastRunShots, lastRunRounds = 0, 0
-
-local function ledgerReset(now)
-    -- keep the run that just ended, otherwise the auto-reload at the end of a
-    -- magazine wipes the result the moment it finishes being interesting
-    if shotsFired > 0 or roundsSpent > 0 then
-        lastRunShots, lastRunRounds = shotsFired, roundsSpent
-    end
-    shotsFired, roundsSpent, ledgerDrift = 0, 0, 0
-    lastHudMag = now
-end
-
-local function ledgerStep()
-    local now = hudMag()
-    if not now then return end
-
-    local gun = activeWeaponName()
-    if gun ~= ledgerWeapon then
-        ledgerWeapon = gun
-        ledgerReset(now)
-        return
-    end
-
-    if lastHudMag == nil then lastHudMag = now; return end
-
-    local drop = lastHudMag - now
-    if drop > LEDGER_JUMP then
-        ledgerReset(now)                -- counter swapped out, not fired down
-        return
-    elseif drop > 0 then
-        roundsSpent += drop
-        pushRound(drop)
-    elseif drop < 0 then
-        ledgerReset(now)                -- reloaded, both sides full again
-        return
-    end
-    lastHudMag = now
-
-    ledgerDrift = shotsFired - roundsSpent
-    if ledgerDrift > LEDGER_SLACK and not ledgerTripped then
-        ledgerTripped = true
-        if Config.RateEnabled then
-            Config.RateEnabled = false
-            pcall(applyFireRate)
-        end
-    end
-end
-
-track(RunService.Heartbeat:Connect(ledgerStep))
-
-local function rateReadout()
-    local name = activeWeaponName()
-    local folder = name and Weapons:FindFirstChild(name)
-    local vars = folder and folder:FindFirstChild("Variables")
-    local fr = vars and vars:FindFirstChild("FireRate")
-    local set = fr and fr.Value or 0
-    local stock = name and originalRates[name] or set
-
-    if ledgerTripped then
-        return string.format("REVERTED to stock -- %d packets ran past the rounds the server issued",
-            ledgerDrift)
-    end
-
-    -- a semi-auto fires once per click, so holding the trigger gives one sample
-    -- and a meaningless number. Say so instead of printing it.
-    local auto = vars and vars:FindFirstChild("FullAuto")
-    if auto and auto.Value ~= true then
-        return string.format("set %d rpm (stock %d) -- %s is semi-auto, hold fire on a full-auto gun",
-            set, stock, tostring(name))
-    end
-
-    local idle = math.min(os.clock() - lastShot, os.clock() - lastRound)
-    if idle > 1.5 then
-        measuredRPM, roundRPM = 0, 0
-        return string.format("set %d rpm (stock %d) -- hold fire to measure  [last run: clicks %d / rounds %d]",
-            set, stock, math.max(shotsFired, lastRunShots), math.max(roundsSpent, lastRunRounds))
-    end
-
-    -- both counts, always. clicks is the Fire packet, rounds is the magazine the
-    -- engine actually spent. they disagreeing is itself the finding.
-    return string.format("set %d rpm (stock %d)  clicks %d @%.0f  rounds %d @%.0f",
-        set, stock, shotsFired, measuredRPM, roundsSpent, roundRPM)
-end
-
---============================================================================
--- esp
---============================================================================
-
-local ESP_BIND = "aurora_esp"
-
-local espGui = Instance.new("ScreenGui")
-espGui.Name = "aurora_esp"
-espGui.ResetOnSpawn = false
-espGui.IgnoreGuiInset = true
-espGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-espGui.DisplayOrder = 98
-espGui.Parent = GUI_HOST
-
-local SKELETON = {
-    { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
-    { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
-    { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
-    { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
-    { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
-}
-
-local function rainbow(offset)
-    return Color3.fromHSV(((tick() * 0.22) + (offset or 0)) % 1, 0.82, 1)
-end
-
-local espPool = {}
-
-local function newLine(parent)
-    local f = Instance.new("Frame")
-    f.BorderSizePixel = 0
-    f.AnchorPoint = Vector2.new(0.5, 0.5)
-    f.BackgroundColor3 = Color3.new(1, 1, 1)
-    f.Visible = false
-    f.Parent = parent
-    return f
-end
-
-local function buildEntry()
-    local holder = Instance.new("Frame")
-    holder.BackgroundTransparency = 1
-    holder.Size = UDim2.fromScale(1, 1)
-    holder.Visible = false
-    holder.Parent = espGui
-
-    local box = Instance.new("Frame")
-    box.BackgroundTransparency = 1
-    box.BorderSizePixel = 0
-    box.Parent = holder
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1.4
-    stroke.Parent = box
-
-    local healthBg = Instance.new("Frame")
-    healthBg.BorderSizePixel = 0
-    healthBg.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
-    healthBg.Visible = false
-    healthBg.Parent = holder
-
-    local healthFill = Instance.new("Frame")
-    healthFill.BorderSizePixel = 0
-    healthFill.AnchorPoint = Vector2.new(0, 1)
-    healthFill.Position = UDim2.fromScale(0, 1)
-    healthFill.Parent = healthBg
-
-    local function label()
-        local t = Instance.new("TextLabel")
-        t.BackgroundTransparency = 1
-        t.Font = Enum.Font.GothamBold
-        t.TextStrokeTransparency = 0.3
-        t.TextStrokeColor3 = Color3.new(0, 0, 0)
-        t.Size = UDim2.fromOffset(260, 14)
-        t.AnchorPoint = Vector2.new(0.5, 0.5)
-        t.Visible = false
-        t.Parent = holder
-        return t
-    end
-
-    local bones = {}
-    for i = 1, #SKELETON do bones[i] = newLine(holder) end
-
-    return {
-        holder = holder, box = box, stroke = stroke,
-        healthBg = healthBg, healthFill = healthFill,
-        name = label(), info = label(), bones = bones,
-        tracer = newLine(holder), highlight = nil,
-    }
-end
-
-local function entryFor(model)
-    local e = espPool[model]
-    if not e then e = buildEntry(); espPool[model] = e end
-    return e
-end
-
-local function espStep()
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-
-    local live = {}
-
-    if Config.EspEnabled then
-        local ffa = ffaActive()
-        local viewport = cam.ViewportSize
-
-        for _, model in ipairs(allCharacters()) do
-            if isEnemy(model, ffa, Config.EspBots, Config.EspPlayers) then
-                local hum = model:FindFirstChildOfClass("Humanoid")
-                local root = model.PrimaryPart
-                local dist = (cam.CFrame.Position - root.Position).Magnitude
-
-                if dist <= Config.EspMaxDist then
-                    local cf, size = model:GetBoundingBox()
-                    local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
-                    local onScreen = false
-
-                    for xs = -1, 1, 2 do for ys = -1, 1, 2 do for zs = -1, 1, 2 do
-                        local world = (cf * CFrame.new(size.X / 2 * xs, size.Y / 2 * ys, size.Z / 2 * zs)).Position
-                        local sp, vis = cam:WorldToViewportPoint(world)
-                        if vis then onScreen = true end
-                        if sp.Z > 0 then
-                            minX = math.min(minX, sp.X); maxX = math.max(maxX, sp.X)
-                            minY = math.min(minY, sp.Y); maxY = math.max(maxY, sp.Y)
-                        end
-                    end end end
-
-                    if onScreen and minX < math.huge then
-                        live[model] = true
-                        local e = entryFor(model)
-                        e.holder.Visible = true
-
-                        local bot = isBot(model)
-                        local col = Config.EspRainbow and rainbow(bot and 0.35 or 0)
-                                    or (bot and Color3.fromRGB(255, 165, 60) or Color3.fromRGB(255, 70, 95))
-                        local w, h = maxX - minX, maxY - minY
-
-                        e.box.Visible = Config.EspBox
-                        e.box.Position = UDim2.fromOffset(minX, minY)
-                        e.box.Size = UDim2.fromOffset(w, h)
-                        e.stroke.Color = col
-
-                        e.healthBg.Visible = Config.EspHealth
-                        e.healthBg.Position = UDim2.fromOffset(minX - 6, minY)
-                        e.healthBg.Size = UDim2.fromOffset(3, h)
-                        local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-                        e.healthFill.Size = UDim2.new(1, 0, frac, 0)
-                        e.healthFill.BackgroundColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(70, 230, 125), frac)
-
-                        e.name.Visible = Config.EspName
-                        e.name.Text = model.Name
-                        e.name.TextColor3 = col
-                        e.name.TextSize = Config.EspTextSize
-                        e.name.Position = UDim2.fromOffset(minX + w / 2, minY - 10)
-
-                        e.info.Visible = Config.EspDistance
-                        e.info.Text = string.format("%.0fm  %.0fhp", dist, hum.Health)
-                        e.info.TextColor3 = col
-                        e.info.TextSize = Config.EspTextSize - 1
-                        e.info.Position = UDim2.fromOffset(minX + w / 2, maxY + 9)
-
-                        for i, pair in ipairs(SKELETON) do
-                            local line = e.bones[i]
-                            local a, b = model:FindFirstChild(pair[1]), model:FindFirstChild(pair[2])
-                            if Config.EspSkeleton and a and b then
-                                local pa = cam:WorldToViewportPoint(a.Position)
-                                local pb = cam:WorldToViewportPoint(b.Position)
-                                if pa.Z > 0 and pb.Z > 0 then
-                                    local d = Vector2.new(pb.X - pa.X, pb.Y - pa.Y)
-                                    line.Visible = true
-                                    line.BackgroundColor3 = col
-                                    line.Position = UDim2.fromOffset((pa.X + pb.X) / 2, (pa.Y + pb.Y) / 2)
-                                    line.Size = UDim2.fromOffset(d.Magnitude, 1)
-                                    line.Rotation = math.deg(math.atan2(d.Y, d.X))
-                                else
-                                    line.Visible = false
-                                end
-                            else
-                                line.Visible = false
-                            end
-                        end
-
-                        if Config.EspTracer then
-                            local pa = Vector2.new(viewport.X / 2, viewport.Y)
-                            local pb = Vector2.new(minX + w / 2, maxY)
-                            local d = pb - pa
-                            e.tracer.Visible = true
-                            e.tracer.BackgroundColor3 = col
-                            e.tracer.Position = UDim2.fromOffset((pa.X + pb.X) / 2, (pa.Y + pb.Y) / 2)
-                            e.tracer.Size = UDim2.fromOffset(d.Magnitude, 1)
-                            e.tracer.Rotation = math.deg(math.atan2(d.Y, d.X))
-                        else
-                            e.tracer.Visible = false
-                        end
-
-                        if Config.EspChams then
-                            if not e.highlight then
-                                e.highlight = Instance.new("Highlight")
-                                e.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                                e.highlight.FillTransparency = 0.55
-                                e.highlight.Parent = espGui
-                            end
-                            e.highlight.Adornee = model
-                            e.highlight.Enabled = true
-                            e.highlight.FillColor = col
-                            e.highlight.OutlineColor = col
-                        elseif e.highlight then
-                            e.highlight.Enabled = false
-                        end
-                    end
+-- buildLedger is a function so its locals land in a budget of its own: the
+-- main chunk is at luau's 200 local limit and roblox enforces it.
+local applyFireRate, oneShotReadout, applyFastReload, repairStompedAmmo, restoreRates, stompRepaired, measuredRPM, shotsFired, roundsSpent, lastHudMag, ledgerDrift, ledgerTripped, rateReadout
+local function buildLedger()
+    applyFireRate = function()
+        for _, entry in ipairs(InventoryF:GetChildren()) do
+            local folder = Weapons:FindFirstChild(entry.Name)
+            local vars = folder and folder:FindFirstChild("Variables")
+            local fr = vars and vars:FindFirstChild("FireRate")
+            if fr then
+                if originalRates[entry.Name] == nil then originalRates[entry.Name] = fr.Value end
+
+                local osRPM = oneShotPlan(entry.Name)
+                if osRPM then
+                    -- One Shot owns the cadence while it is set, Rate tab or not
+                    fr.Value = osRPM
+                elseif Config.RateEnabled then
+                    fr.Value = math.floor(math.min(originalRates[entry.Name] * Config.RateMul, Config.RateCap))
+                else
+                    fr.Value = originalRates[entry.Name]
                 end
             end
         end
     end
 
-    for model, e in pairs(espPool) do
-        if not live[model] then
-            e.holder.Visible = false
-            if e.highlight then e.highlight.Enabled = false end
-            if not model.Parent then
-                if e.highlight then e.highlight:Destroy() end
-                e.holder:Destroy()
-                espPool[model] = nil
+    oneShotReadout = function()
+        if (Config.OneShot or 0) <= 0 then return "off" end
+
+        local gun = equipped
+        if not gun then return "no weapon equipped" end
+
+        local rpm, rounds, per, clip = oneShotPlan(gun)
+        if not rpm then
+            local folder = Weapons:FindFirstChild(gun)
+            local vars = folder and folder:FindFirstChild("Variables")
+            local md = vars and vars:FindFirstChild("MaxDamage")
+            if md then
+                return string.format("%s hits %d -- one round already covers %d", gun, md.Value, Config.OneShot)
+            end
+            return gun .. " has no damage value"
+        end
+
+        local warn = ""
+        if clip and rounds > clip then warn = string.format("  !mag holds %d", clip) end
+        return string.format("%s %ddmg x%d rounds @%d rpm%s", gun, per, rounds, rpm, warn)
+    end
+
+    applyRate = applyFireRate
+
+    --  No ammo override exists any more, and none can be added back.
+    --
+    --  The reserve is server-counted the same way the magazine is. Pinning it to 300
+    --  killed the TT30 first because its stock reserve is 45 against the M16A1's 125:
+    --  nine-round magazine, five reloads, and the server's pool was empty while the
+    --  client kept handing out more. From that point the client fires rounds the
+    --  server never issued and hit credit stops for the rest of the round, which is
+    --  why the rifle kept working through the same test and the pistol did not, and
+    --  why switching the toggle off changed nothing. The divergence is a tally, not a
+    --  setting -- only a rejoin clears it.
+    --
+    --  So the rule for this whole file: never hand the client a round the server did
+    --  not issue. The guard below holds every ammo figure at stock instead, and the
+    --  reload is made less painful through the engine's own perk rather than by
+    --  inventing ammunition.
+
+    --  FasterReloads is a LocalPlayer attribute read at equip (vortex.lua:8987). When
+    --  it is above zero the attachment string becomes "Fast Mags" and RunAnimation
+    --  plays every Reload / EmptyReload / Load / Charge frame set at 1.2x
+    --  (vortex.lua:762). Pure viewmodel animation -- no packet, no round, no tally.
+    applyFastReload = function()
+        local want = Config.FastReload and 1 or 0
+        if (LocalPlayer:GetAttribute("FasterReloads") or 0) ~= want then
+            LocalPlayer:SetAttribute("FasterReloads", want)
+        end
+    end
+
+    track(RunService.Heartbeat:Connect(applyFastReload))
+
+    -- Undo an older build of this script that wrote ClipSize / StoredAmmo straight
+    -- into ReplicatedStorage.Weapons. Those are what the server validates reloads
+    -- against, so a stomped value kills damage for the rest of the session.
+    -- Variables.Ammo is never written by this script, so it is the stock figure.
+    repairStompedAmmo = function()
+        local fixed = {}
+        for _, folder in ipairs(Weapons:GetChildren()) do
+            local vars = folder:FindFirstChild("Variables")
+            local twin = vars and vars:FindFirstChild("Ammo")
+            local clip = vars and vars:FindFirstChild("ClipSize")
+            if twin and clip and clip.Value ~= twin.Value then
+                clip.Value = twin.Value
+                table.insert(fixed, folder.Name)
+            end
+        end
+        for _, entry in ipairs(InventoryF:GetChildren()) do
+            if entry:IsA("StringValue") then
+                local stock = stockAmmo(entry.Name)
+                local mag, reserve, nr = parseAmmo(entry.Value)
+                if stock and mag and mag > stock.clip then
+                    writeAmmo(entry, stock.clip, reserve, nr)
+                end
+            end
+        end
+        return fixed
+    end
+
+    restoreRates = function()
+        for name, rpm in pairs(originalRates) do
+            local folder = Weapons:FindFirstChild(name)
+            local vars = folder and folder:FindFirstChild("Variables")
+            local fr = vars and vars:FindFirstChild("FireRate")
+            if fr then fr.Value = rpm end
+        end
+    end
+
+    pcall(applyFireRate)                       -- seeds originalRates with the stock rpm
+    stompRepaired = repairStompedAmmo()
+
+    --  Measured cadence. Vortex.Audio.Click:Play() runs once per shot on the line
+    --  straight after the Fire packet (vortex.lua:5751), so Sound.Played is an exact
+    --  per-shot tick. Keeps the last 24 and reports over the span they cover, which
+    --  makes a FireRate write either show up as a number or not at all.
+    local shotTimes = {}
+    measuredRPM = 0
+    local lastShot = 0
+
+    shotsFired, roundsSpent, lastHudMag = 0, 0, nil
+    ledgerDrift, ledgerTripped = 0, false
+
+    -- Second, independent cadence: the HUD's own round counter. Sound.Played can be
+    -- dropped when Play() is called again while the clip is still running, so the
+    -- counter is the measure that cannot lie about how many rounds actually left.
+    local roundTimes = {}
+    local roundRPM = 0
+    local lastRound = 0
+
+    local function pushRound(n)
+        local now = os.clock()
+        lastRound = now
+        for _ = 1, math.min(n, 4) do table.insert(roundTimes, now) end
+        while #roundTimes > 24 do table.remove(roundTimes, 1) end
+        while #roundTimes > 2 and (now - roundTimes[1]) > 1.25 do table.remove(roundTimes, 1) end
+
+        local c = #roundTimes
+        local span = roundTimes[c] - roundTimes[1]
+        roundRPM = (c > 1 and span > 0) and ((c - 1) / span * 60) or 0
+    end
+
+    do
+        local clickSound = VortexRoot:FindFirstChild("Audio")
+        clickSound = clickSound and clickSound:FindFirstChild("Click")
+        if clickSound then
+            track(clickSound.Played:Connect(function()
+                local now = os.clock()
+                lastShot = now
+                shotsFired += 1
+                table.insert(shotTimes, now)
+                if #shotTimes > 24 then table.remove(shotTimes, 1) end
+
+                -- drop anything older than a second so bursts do not average with idle
+                while #shotTimes > 2 and (now - shotTimes[1]) > 1.25 do
+                    table.remove(shotTimes, 1)
+                end
+
+                local n = #shotTimes
+                local span = shotTimes[n] - shotTimes[1]
+                measuredRPM = (n > 1 and span > 0) and ((n - 1) / span * 60) or 0
+            end))
+        end
+    end
+
+    --  LEDGER. The HUD's magazine counter is the engine's own round count, built
+    --  from three digit labels under PlayerGui.HUD.Ammo.Mag (1 = hundreds). Every
+    --  Click play is one Fire packet leaving; every step down in that counter is one
+    --  round actually spent. While those two move together the server's tally and
+    --  ours agree. The moment packets outrun rounds the server is being asked to
+    --  credit ammunition it never issued, which is the state that stops damage for
+    --  the rest of the round -- so the rate goes back to stock the instant it opens,
+    --  before a match is lost to it rather than after.
+    local LEDGER_SLACK = 3
+
+    local function hudMag()
+        local gui = LocalPlayer:FindFirstChild("PlayerGui")
+        local hud = gui and gui:FindFirstChild("HUD")
+        local ammo = hud and hud:FindFirstChild("Ammo")
+        local mag = ammo and ammo:FindFirstChild("Mag")
+        if not mag then return nil end
+
+        local n = 0
+        for i = 1, 3 do
+            local d = mag:FindFirstChild(tostring(i))
+            local digit = d and tonumber(d.Text)
+            if not digit then return nil end
+            n = n * 10 + digit
+        end
+        return n
+    end
+
+    -- A swap from a 22-round rifle to a 9-round pistol drops the counter by 13 in one
+    -- frame, which the first version booked as thirteen rounds fired. Nothing fires
+    -- that fast: 1200 rpm is 20 rounds a second, a third of a round per frame, so any
+    -- single-frame fall past LEDGER_JUMP is the counter being replaced rather than
+    -- spent. A weapon change resets it for the same reason.
+    local LEDGER_JUMP = 3
+    local ledgerWeapon = nil
+
+    local lastRunShots, lastRunRounds = 0, 0
+
+    local function ledgerReset(now)
+        -- keep the run that just ended, otherwise the auto-reload at the end of a
+        -- magazine wipes the result the moment it finishes being interesting
+        if shotsFired > 0 or roundsSpent > 0 then
+            lastRunShots, lastRunRounds = shotsFired, roundsSpent
+        end
+        shotsFired, roundsSpent, ledgerDrift = 0, 0, 0
+        lastHudMag = now
+    end
+
+    local function ledgerStep()
+        local now = hudMag()
+        if not now then return end
+
+        local gun = activeWeaponName()
+        if gun ~= ledgerWeapon then
+            ledgerWeapon = gun
+            ledgerReset(now)
+            return
+        end
+
+        if lastHudMag == nil then lastHudMag = now; return end
+
+        local drop = lastHudMag - now
+        if drop > LEDGER_JUMP then
+            ledgerReset(now)                -- counter swapped out, not fired down
+            return
+        elseif drop > 0 then
+            roundsSpent += drop
+            pushRound(drop)
+        elseif drop < 0 then
+            ledgerReset(now)                -- reloaded, both sides full again
+            return
+        end
+        lastHudMag = now
+
+        ledgerDrift = shotsFired - roundsSpent
+        if ledgerDrift > LEDGER_SLACK and not ledgerTripped then
+            ledgerTripped = true
+            if Config.RateEnabled then
+                Config.RateEnabled = false
+                pcall(applyFireRate)
             end
         end
     end
+
+    track(RunService.Heartbeat:Connect(ledgerStep))
+
+    rateReadout = function()
+        local name = activeWeaponName()
+        local folder = name and Weapons:FindFirstChild(name)
+        local vars = folder and folder:FindFirstChild("Variables")
+        local fr = vars and vars:FindFirstChild("FireRate")
+        local set = fr and fr.Value or 0
+        local stock = name and originalRates[name] or set
+
+        if ledgerTripped then
+            return string.format("REVERTED to stock -- %d packets ran past the rounds the server issued",
+                ledgerDrift)
+        end
+
+        -- a semi-auto fires once per click, so holding the trigger gives one sample
+        -- and a meaningless number. Say so instead of printing it.
+        local auto = vars and vars:FindFirstChild("FullAuto")
+        if auto and auto.Value ~= true then
+            return string.format("set %d rpm (stock %d) -- %s is semi-auto, hold fire on a full-auto gun",
+                set, stock, tostring(name))
+        end
+
+        local idle = math.min(os.clock() - lastShot, os.clock() - lastRound)
+        if idle > 1.5 then
+            measuredRPM, roundRPM = 0, 0
+            return string.format("set %d rpm (stock %d) -- hold fire to measure  [last run: clicks %d / rounds %d]",
+                set, stock, math.max(shotsFired, lastRunShots), math.max(roundsSpent, lastRunRounds))
+        end
+
+        -- both counts, always. clicks is the Fire packet, rounds is the magazine the
+        -- engine actually spent. they disagreeing is itself the finding.
+        return string.format("set %d rpm (stock %d)  clicks %d @%.0f  rounds %d @%.0f",
+            set, stock, shotsFired, measuredRPM, roundsSpent, roundRPM)
+    end
 end
 
-pcall(function() RunService:UnbindFromRenderStep(ESP_BIND) end)
-RunService:BindToRenderStep(ESP_BIND, Enum.RenderPriority.Last.Value, espStep)
+buildLedger()
 
 --============================================================================
--- ui  --  GTA mod menu (NativeUI shape)
---
---  Replicated from ui_ref/03_nativeui_player_options.webp and 04_..._weapon.webp:
---  accent banner, pure black subtitle bar with the page name in caps, rows on a
---  translucent black panel, the selected row a WHITE fill with BLACK text, ">>>"
---  for a submenu, a hollow square on the right for a toggle, a plain right
---  aligned value for everything else, then a description band carrying the text
---  for the HIGHLIGHTED row. The "<i> / <n>" counter and the accent section
---  headers come from 01/02 (Claude Menu), because a 186 entry weapon list needs
---  both and those shots have no equivalent.
---
+-- esp
+--============================================================================
+-- buildEsp lives in a function of its own: the main chunk is at luau's 200
+-- local limit, and a function body gets a budget of its own.
+local ESP_BIND, espGui
+local function buildEsp()
+
+    ESP_BIND = "aurora_esp"
+
+    espGui = Instance.new("ScreenGui")
+    espGui.Name = "aurora_esp"
+    espGui.ResetOnSpawn = false
+    espGui.IgnoreGuiInset = true
+    espGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    espGui.DisplayOrder = 98
+    espGui.Parent = GUI_HOST
+
+    local SKELETON = {
+        { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+        { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+        { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+        { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+        { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+    }
+
+    local function rainbow(offset)
+        return Color3.fromHSV(((tick() * 0.22) + (offset or 0)) % 1, 0.82, 1)
+    end
+
+    local espPool = {}
+
+    local function newLine(parent)
+        local f = Instance.new("Frame")
+        f.BorderSizePixel = 0
+        f.AnchorPoint = Vector2.new(0.5, 0.5)
+        f.BackgroundColor3 = Color3.new(1, 1, 1)
+        f.Visible = false
+        f.Parent = parent
+        return f
+    end
+
+    local function buildEntry()
+        local holder = Instance.new("Frame")
+        holder.BackgroundTransparency = 1
+        holder.Size = UDim2.fromScale(1, 1)
+        holder.Visible = false
+        holder.Parent = espGui
+
+        local box = Instance.new("Frame")
+        box.BackgroundTransparency = 1
+        box.BorderSizePixel = 0
+        box.Parent = holder
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 1.4
+        stroke.Parent = box
+
+        local healthBg = Instance.new("Frame")
+        healthBg.BorderSizePixel = 0
+        healthBg.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+        healthBg.Visible = false
+        healthBg.Parent = holder
+
+        local healthFill = Instance.new("Frame")
+        healthFill.BorderSizePixel = 0
+        healthFill.AnchorPoint = Vector2.new(0, 1)
+        healthFill.Position = UDim2.fromScale(0, 1)
+        healthFill.Parent = healthBg
+
+        local function label()
+            local t = Instance.new("TextLabel")
+            t.BackgroundTransparency = 1
+            t.Font = Enum.Font.GothamBold
+            t.TextStrokeTransparency = 0.3
+            t.TextStrokeColor3 = Color3.new(0, 0, 0)
+            t.Size = UDim2.fromOffset(260, 14)
+            t.AnchorPoint = Vector2.new(0.5, 0.5)
+            t.Visible = false
+            t.Parent = holder
+            return t
+        end
+
+        local bones = {}
+        for i = 1, #SKELETON do bones[i] = newLine(holder) end
+
+        return {
+            holder = holder, box = box, stroke = stroke,
+            healthBg = healthBg, healthFill = healthFill,
+            name = label(), info = label(), bones = bones,
+            tracer = newLine(holder), highlight = nil,
+        }
+    end
+
+    local function entryFor(model)
+        local e = espPool[model]
+        if not e then e = buildEntry(); espPool[model] = e end
+        return e
+    end
+
+    local function espStep()
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+
+        local live = {}
+
+        if Config.EspEnabled then
+            local ffa = ffaActive()
+            local viewport = cam.ViewportSize
+
+            for _, model in ipairs(allCharacters()) do
+                if isEnemy(model, ffa, Config.EspBots, Config.EspPlayers) then
+                    local hum = model:FindFirstChildOfClass("Humanoid")
+                    local root = model.PrimaryPart
+                    local dist = (cam.CFrame.Position - root.Position).Magnitude
+
+                    if dist <= Config.EspMaxDist then
+                        local cf, size = model:GetBoundingBox()
+                        local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+                        local onScreen = false
+
+                        for xs = -1, 1, 2 do for ys = -1, 1, 2 do for zs = -1, 1, 2 do
+                            local world = (cf * CFrame.new(size.X / 2 * xs, size.Y / 2 * ys, size.Z / 2 * zs)).Position
+                            local sp, vis = cam:WorldToViewportPoint(world)
+                            if vis then onScreen = true end
+                            if sp.Z > 0 then
+                                minX = math.min(minX, sp.X); maxX = math.max(maxX, sp.X)
+                                minY = math.min(minY, sp.Y); maxY = math.max(maxY, sp.Y)
+                            end
+                        end end end
+
+                        if onScreen and minX < math.huge then
+                            live[model] = true
+                            local e = entryFor(model)
+                            e.holder.Visible = true
+
+                            local bot = isBot(model)
+                            local col = Config.EspRainbow and rainbow(bot and 0.35 or 0)
+                                        or (bot and Color3.fromRGB(255, 165, 60) or Color3.fromRGB(255, 70, 95))
+                            local w, h = maxX - minX, maxY - minY
+
+                            e.box.Visible = Config.EspBox
+                            e.box.Position = UDim2.fromOffset(minX, minY)
+                            e.box.Size = UDim2.fromOffset(w, h)
+                            e.stroke.Color = col
+
+                            e.healthBg.Visible = Config.EspHealth
+                            e.healthBg.Position = UDim2.fromOffset(minX - 6, minY)
+                            e.healthBg.Size = UDim2.fromOffset(3, h)
+                            local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+                            e.healthFill.Size = UDim2.new(1, 0, frac, 0)
+                            e.healthFill.BackgroundColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(70, 230, 125), frac)
+
+                            e.name.Visible = Config.EspName
+                            e.name.Text = model.Name
+                            e.name.TextColor3 = col
+                            e.name.TextSize = Config.EspTextSize
+                            e.name.Position = UDim2.fromOffset(minX + w / 2, minY - 10)
+
+                            e.info.Visible = Config.EspDistance
+                            e.info.Text = string.format("%.0fm  %.0fhp", dist, hum.Health)
+                            e.info.TextColor3 = col
+                            e.info.TextSize = Config.EspTextSize - 1
+                            e.info.Position = UDim2.fromOffset(minX + w / 2, maxY + 9)
+
+                            for i, pair in ipairs(SKELETON) do
+                                local line = e.bones[i]
+                                local a, b = model:FindFirstChild(pair[1]), model:FindFirstChild(pair[2])
+                                if Config.EspSkeleton and a and b then
+                                    local pa = cam:WorldToViewportPoint(a.Position)
+                                    local pb = cam:WorldToViewportPoint(b.Position)
+                                    if pa.Z > 0 and pb.Z > 0 then
+                                        local d = Vector2.new(pb.X - pa.X, pb.Y - pa.Y)
+                                        line.Visible = true
+                                        line.BackgroundColor3 = col
+                                        line.Position = UDim2.fromOffset((pa.X + pb.X) / 2, (pa.Y + pb.Y) / 2)
+                                        line.Size = UDim2.fromOffset(d.Magnitude, 1)
+                                        line.Rotation = math.deg(math.atan2(d.Y, d.X))
+                                    else
+                                        line.Visible = false
+                                    end
+                                else
+                                    line.Visible = false
+                                end
+                            end
+
+                            if Config.EspTracer then
+                                local pa = Vector2.new(viewport.X / 2, viewport.Y)
+                                local pb = Vector2.new(minX + w / 2, maxY)
+                                local d = pb - pa
+                                e.tracer.Visible = true
+                                e.tracer.BackgroundColor3 = col
+                                e.tracer.Position = UDim2.fromOffset((pa.X + pb.X) / 2, (pa.Y + pb.Y) / 2)
+                                e.tracer.Size = UDim2.fromOffset(d.Magnitude, 1)
+                                e.tracer.Rotation = math.deg(math.atan2(d.Y, d.X))
+                            else
+                                e.tracer.Visible = false
+                            end
+
+                            if Config.EspChams then
+                                if not e.highlight then
+                                    e.highlight = Instance.new("Highlight")
+                                    e.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                                    e.highlight.FillTransparency = 0.55
+                                    e.highlight.Parent = espGui
+                                end
+                                e.highlight.Adornee = model
+                                e.highlight.Enabled = true
+                                e.highlight.FillColor = col
+                                e.highlight.OutlineColor = col
+                            elseif e.highlight then
+                                e.highlight.Enabled = false
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        for model, e in pairs(espPool) do
+            if not live[model] then
+                e.holder.Visible = false
+                if e.highlight then e.highlight.Enabled = false end
+                if not model.Parent then
+                    if e.highlight then e.highlight:Destroy() end
+                    e.holder:Destroy()
+                    espPool[model] = nil
+                end
+            end
+        end
+    end
+
+    pcall(function() RunService:UnbindFromRenderStep(ESP_BIND) end)
+    RunService:BindToRenderStep(ESP_BIND, Enum.RenderPriority.Last.Value, espStep)
+
+    --============================================================================
+    -- ui  --  GTA mod menu (NativeUI shape)
+    --
+    --  Replicated from ui_ref/03_nativeui_player_options.webp and 04_..._weapon.webp:
+    --  accent banner, pure black subtitle bar with the page name in caps, rows on a
+    --  translucent black panel, the selected row a WHITE fill with BLACK text, ">>>"
+    --  for a submenu, a hollow square on the right for a toggle, a plain right
+    --  aligned value for everything else, then a description band carrying the text
+    --  for the HIGHLIGHTED row. The "<i> / <n>" counter and the accent section
+    --  headers come from 01/02 (Claude Menu), because a 186 entry weapon list needs
+    --  both and those shots have no equivalent.
+    --
+end
+
+buildEsp()
 --  Keyboard only: Up/Down move, Left/Right change a value, Enter selects,
 --  Backspace goes back, a letter jumps in a long list. Arrows also drive this
 --  game's StreakUp/StreakDown bindings, which is harmless while the streak
@@ -2407,303 +2428,310 @@ end
 --  Weapons.<gun>.Class, counted live off the folder: Assault Rifle 49, SMG 47,
 --  Handgun 35, Carbine 25, Melee 23, Shotgun 21, Sniper Rifle 16, LMG 12,
 --  Launcher 9, HMG 8, Marksman Rifle 4, Short 2, plus four Bonus* variants.
---  Melee is not a slot -- it rides on Inventory:GetAttribute("MeleeWeapon").
---============================================================================
+-- buildPages lives in a function of its own: the main chunk is at luau's 200
+-- local limit, and a function body gets a budget of its own.
+local rootPage
+local function buildPages()
+    --  Melee is not a slot -- it rides on Inventory:GetAttribute("MeleeWeapon").
+    --============================================================================
 
-local PRIMARY_CLASSES = {
-    ["Assault Rifle"] = true, ["Marksman Rifle"] = true, ["Sniper Rifle"] = true,
-    Carbine = true, BonusCarbine = true,
-    SMG = true, BonusSMG = true,
-    Shotgun = true, BonusShotgun = true,
-    LMG = true, HMG = true,
-}
-
-local SECONDARY_CLASSES = {
-    Handgun = true, BonusHandgun = true,
-    Short = true,
-    Launcher = true,
-}
-
-local function classOf(folder)
-    local c = folder:FindFirstChild("Class")
-    if not c then return nil end
-    local ok, v = pcall(function() return tostring(c.Value) end)
-    return ok and v or nil
-end
-
-local function weaponList(allowed)
-    local t = { "None" }
-    for _, w in ipairs(Weapons:GetChildren()) do
-        local class = classOf(w)
-        if class and allowed[class] then table.insert(t, w.Name) end
-    end
-    table.sort(t)
-    return t
-end
-
-local function primaryList()   return weaponList(PRIMARY_CLASSES)   end
-local function secondaryList() return weaponList(SECONDARY_CLASSES) end
-
-local function camoList()
-    local t = { "None" }
-    for _, c in ipairs(Camos:GetChildren()) do table.insert(t, c.Name) end
-    table.sort(t)
-    return t
-end
-
-if Config.ForcePrimary ~= "None" and not table.find(primaryList(), Config.ForcePrimary) then
-    Config.ForcePrimary = "None"
-end
-if Config.ForceSecondary ~= "None" and not table.find(secondaryList(), Config.ForceSecondary) then
-    Config.ForceSecondary = "None"
-end
-
---============================================================================
--- pages
---============================================================================
-
-local function aimPage()
-    local items = {
-        Info("idle", function() return statusText end),
-        Header("Lock"),
-        Toggle("Enabled", "AimEnabled",
-            "Master switch for the aim system."),
-        Cycle("Method", "Method", { "Silent", "Lock" },
-            "Silent parks the muzzle beside the target, the camera never moves. Lock turns the camera.",
-            function()
-                -- the radius row only exists under Silent, so the page is
-                -- rebuilt in place rather than hidden row by row
-                local f = currentFrame()
-                if f then
-                    f.page = aimPage()
-                    f.index = math.min(f.index, #f.page.items)
-                end
-                render()
-            end),
+    local PRIMARY_CLASSES = {
+        ["Assault Rifle"] = true, ["Marksman Rifle"] = true, ["Sniper Rifle"] = true,
+        Carbine = true, BonusCarbine = true,
+        SMG = true, BonusSMG = true,
+        Shotgun = true, BonusShotgun = true,
+        LMG = true, HMG = true,
     }
 
-    if Config.Method == "Silent" then
-        items[#items + 1] = Entry("Silent Radius", "Standoff", 1, 20,
-            "Studs the muzzle parks short of the body. Type a number and hit Enter. 1 is on the body, 20 is well off it.")
-    end
-
-    local rest = {
-        Cycle("Engage", "Mode", { "Always", "Hold", "Toggle" },
-            "Always on, held on a key, or toggled by a key."),
-        Cycle("Hold Key", "Key", { "MouseButton2", "MouseButton1", "E", "Q", "C", "X", "V", "LeftAlt" },
-            "The key used by Hold and Toggle."),
-        Cycle("Bone", "Bone", { "Auto", "Head", "UpperTorso", "HumanoidRootPart" },
-            "Auto takes the head when it sits closer to your aim than the chest."),
-        Header("Limits"),
-        Slider("FOV", "FOVDeg", 1, 180, 1, 0,
-            "Degrees off your crosshair a target may sit and still be picked."),
-        Slider("Range", "Range", 50, 1000, 10, 0,
-            "Furthest target, in studs."),
-        Slider("Lock Smoothness", "Smoothness", 0.02, 1, 0.02, 2,
-            "How hard the camera snaps. Lock only."),
-        Toggle("Sticky Target", "StickyTarget",
-            "Hold the same target for as long as it stays valid."),
+    local SECONDARY_CLASSES = {
+        Handgun = true, BonusHandgun = true,
+        Short = true,
+        Launcher = true,
     }
-    for _, it in ipairs(rest) do items[#items + 1] = it end
 
-    return { title = "Aimbot", subtitle = "Aimbot", items = items }
-end
-
-local function targetPage()
-    return { title = "Targets", subtitle = "Targets", items = {
-        Header("Who"),
-        Toggle("Bots", "TargetBots",
-            "Bots are the Players entries that are Folders rather than Player objects."),
-        Toggle("Players", "TargetPlayers",
-            "Real players only."),
-        Cycle("Free For All", "FFA", { "Auto", "On", "Off" },
-            "Auto reads the teams and decides for you."),
-        Header("Checks"),
-        Cycle("Wall Check", "WallCheck", { "Auto", "Strict", "Off" },
-            "Auto is strict line of sight, dropped for the 9 Launcher weapons whose splash does not need it."),
-        Toggle("Predict", "Predict",
-            "Lead the shot. Lock only, since a parked muzzle has no travel time."),
-        Slider("Lead Trim", "LeadMul", 0, 2.5, 0.05, 2,
-            "Scales the computed lead."),
-        Slider("Cone Clamp", "ConeCap", 0, 20, 1, 0,
-            "GetHitables only reports targets inside 8 studs of the fire line, so lead is clamped under it."),
-    } }
-end
-
-local function espPage()
-    return { title = "ESP", subtitle = "ESP", items = {
-        Toggle("Enabled", "EspEnabled", "Master switch for the overlay."),
-        Header("Draw"),
-        Toggle("Box", "EspBox", "Bounding box."),
-        Toggle("Name", "EspName", "Username above the box."),
-        Toggle("Health Bar", "EspHealth", "Bar down the left of the box."),
-        Toggle("Distance", "EspDistance", "Distance and health under the box."),
-        Toggle("Skeleton", "EspSkeleton", "Bone lines."),
-        Toggle("Chams", "EspChams", "Fill the model through walls."),
-        Toggle("Tracers", "EspTracer", "Line from the bottom of the screen."),
-        Toggle("Rainbow", "EspRainbow", "Cycle the colour."),
-        Header("Who"),
-        Toggle("Show Bots", "EspBots", "Draw bots."),
-        Toggle("Show Players", "EspPlayers", "Draw real players."),
-        Header("Limits"),
-        Slider("Max Distance", "EspMaxDist", 100, 2000, 50, 0, "Stop drawing past this."),
-        Slider("Text Size", "EspTextSize", 8, 20, 1, 0, "Label size."),
-    } }
-end
-
-local function giveGun(slot, name)
-    return function()
-        Config[slot] = name
-        local ok, err = applyLoadout()
-        if not ok then error(tostring(err)) end
+    local function classOf(folder)
+        local c = folder:FindFirstChild("Class")
+        if not c then return nil end
+        local ok, v = pcall(function() return tostring(c.Value) end)
+        return ok and v or nil
     end
-end
 
-local function weaponPage()
-    return { title = "Weapons", subtitle = "Weapons", items = {
-        Header("Loadout"),
-        Picker("Primary", "ForcePrimary", primaryList,
-            "Rifles, SMGs, shotguns, snipers, LMGs and HMGs."),
-        Picker("Secondary", "ForceSecondary", secondaryList,
-            "Handguns, sawn-offs and launchers."),
-        Picker("Skin", "ForceCamo", camoList,
-            "Camo applied to both guns."),
-        Toggle("Apply On Respawn", "ApplyOnSpawn",
-            "Re-apply the loadout every time you spawn."),
-        Action("Apply Now", function()
+    local function weaponList(allowed)
+        local t = { "None" }
+        for _, w in ipairs(Weapons:GetChildren()) do
+            local class = classOf(w)
+            if class and allowed[class] then table.insert(t, w.Name) end
+        end
+        table.sort(t)
+        return t
+    end
+
+    local function primaryList()   return weaponList(PRIMARY_CLASSES)   end
+    local function secondaryList() return weaponList(SECONDARY_CLASSES) end
+
+    local function camoList()
+        local t = { "None" }
+        for _, c in ipairs(Camos:GetChildren()) do table.insert(t, c.Name) end
+        table.sort(t)
+        return t
+    end
+
+    if Config.ForcePrimary ~= "None" and not table.find(primaryList(), Config.ForcePrimary) then
+        Config.ForcePrimary = "None"
+    end
+    if Config.ForceSecondary ~= "None" and not table.find(secondaryList(), Config.ForceSecondary) then
+        Config.ForceSecondary = "None"
+    end
+
+    --============================================================================
+    -- pages
+    --============================================================================
+
+    local function aimPage()
+        local items = {
+            Info("idle", function() return statusText end),
+            Header("Lock"),
+            Toggle("Enabled", "AimEnabled",
+                "Master switch for the aim system."),
+            Cycle("Method", "Method", { "Silent", "Lock" },
+                "Silent parks the muzzle beside the target, the camera never moves. Lock turns the camera.",
+                function()
+                    -- the radius row only exists under Silent, so the page is
+                    -- rebuilt in place rather than hidden row by row
+                    local f = currentFrame()
+                    if f then
+                        f.page = aimPage()
+                        f.index = math.min(f.index, #f.page.items)
+                    end
+                    render()
+                end),
+        }
+
+        if Config.Method == "Silent" then
+            items[#items + 1] = Entry("Silent Radius", "Standoff", 1, 20,
+                "Studs the muzzle parks short of the body. Type a number and hit Enter. 1 is on the body, 20 is well off it.")
+        end
+
+        local rest = {
+            Cycle("Engage", "Mode", { "Always", "Hold", "Toggle" },
+                "Always on, held on a key, or toggled by a key."),
+            Cycle("Hold Key", "Key", { "MouseButton2", "MouseButton1", "E", "Q", "C", "X", "V", "LeftAlt" },
+                "The key used by Hold and Toggle."),
+            Cycle("Bone", "Bone", { "Auto", "Head", "UpperTorso", "HumanoidRootPart" },
+                "Auto takes the head when it sits closer to your aim than the chest."),
+            Header("Limits"),
+            Slider("FOV", "FOVDeg", 1, 180, 1, 0,
+                "Degrees off your crosshair a target may sit and still be picked."),
+            Slider("Range", "Range", 50, 1000, 10, 0,
+                "Furthest target, in studs."),
+            Slider("Lock Smoothness", "Smoothness", 0.02, 1, 0.02, 2,
+                "How hard the camera snaps. Lock only."),
+            Toggle("Sticky Target", "StickyTarget",
+                "Hold the same target for as long as it stays valid."),
+        }
+        for _, it in ipairs(rest) do items[#items + 1] = it end
+
+        return { title = "Aimbot", subtitle = "Aimbot", items = items }
+    end
+
+    local function targetPage()
+        return { title = "Targets", subtitle = "Targets", items = {
+            Header("Who"),
+            Toggle("Bots", "TargetBots",
+                "Bots are the Players entries that are Folders rather than Player objects."),
+            Toggle("Players", "TargetPlayers",
+                "Real players only."),
+            Cycle("Free For All", "FFA", { "Auto", "On", "Off" },
+                "Auto reads the teams and decides for you."),
+            Header("Checks"),
+            Cycle("Wall Check", "WallCheck", { "Auto", "Strict", "Off" },
+                "Auto is strict line of sight, dropped for the 9 Launcher weapons whose splash does not need it."),
+            Toggle("Predict", "Predict",
+                "Lead the shot. Lock only, since a parked muzzle has no travel time."),
+            Slider("Lead Trim", "LeadMul", 0, 2.5, 0.05, 2,
+                "Scales the computed lead."),
+            Slider("Cone Clamp", "ConeCap", 0, 20, 1, 0,
+                "GetHitables only reports targets inside 8 studs of the fire line, so lead is clamped under it."),
+        } }
+    end
+
+    local function espPage()
+        return { title = "ESP", subtitle = "ESP", items = {
+            Toggle("Enabled", "EspEnabled", "Master switch for the overlay."),
+            Header("Draw"),
+            Toggle("Box", "EspBox", "Bounding box."),
+            Toggle("Name", "EspName", "Username above the box."),
+            Toggle("Health Bar", "EspHealth", "Bar down the left of the box."),
+            Toggle("Distance", "EspDistance", "Distance and health under the box."),
+            Toggle("Skeleton", "EspSkeleton", "Bone lines."),
+            Toggle("Chams", "EspChams", "Fill the model through walls."),
+            Toggle("Tracers", "EspTracer", "Line from the bottom of the screen."),
+            Toggle("Rainbow", "EspRainbow", "Cycle the colour."),
+            Header("Who"),
+            Toggle("Show Bots", "EspBots", "Draw bots."),
+            Toggle("Show Players", "EspPlayers", "Draw real players."),
+            Header("Limits"),
+            Slider("Max Distance", "EspMaxDist", 100, 2000, 50, 0, "Stop drawing past this."),
+            Slider("Text Size", "EspTextSize", 8, 20, 1, 0, "Label size."),
+        } }
+    end
+
+    local function giveGun(slot, name)
+        return function()
+            Config[slot] = name
             local ok, err = applyLoadout()
             if not ok then error(tostring(err)) end
-        end, "Rebuilds the inventory, primary first. Respawn for it to take."),
-        Header("One Shot"),
-        Entry("Damage", "OneShot", 0, 2000,
-            "Damage one trigger pull should land. Type a number, hit Enter, then swap weapon once so the engine re-reads the cadence. 0 turns it off.",
-            function()
-                applyFireRate()
-            end),
-        Info("plan", oneShotReadout),
-        Header("Streak guns"),
-        Action("Give Minigun", giveGun("ForcePrimary", "Minigun"),
-            "LMG, 500 mag, 2000 rpm, 75 damage. A killstreak gun that needs no streak."),
-        Action("Give Laser Minigun", giveGun("ForcePrimary", "Laser Minigun"),
-            "LMG, 300 mag, 1500 rpm, 99 damage."),
-        Action("Give Akimbo AA12", giveGun("ForcePrimary", "Akimbo AA12"),
-            "Shotgun, 32 mag, 500 damage."),
-        Action("Give MGL", giveGun("ForceSecondary", "MGL"),
-            "Launcher, 6 mag, 500 damage."),
-    } }
+        end
+    end
+
+    local function weaponPage()
+        return { title = "Weapons", subtitle = "Weapons", items = {
+            Header("Loadout"),
+            Picker("Primary", "ForcePrimary", primaryList,
+                "Rifles, SMGs, shotguns, snipers, LMGs and HMGs."),
+            Picker("Secondary", "ForceSecondary", secondaryList,
+                "Handguns, sawn-offs and launchers."),
+            Picker("Skin", "ForceCamo", camoList,
+                "Camo applied to both guns."),
+            Toggle("Apply On Respawn", "ApplyOnSpawn",
+                "Re-apply the loadout every time you spawn."),
+            Action("Apply Now", function()
+                local ok, err = applyLoadout()
+                if not ok then error(tostring(err)) end
+            end, "Rebuilds the inventory, primary first. Respawn for it to take."),
+            Header("One Shot"),
+            Entry("Damage", "OneShot", 0, 2000,
+                "Damage one trigger pull should land. Type a number, hit Enter, then swap weapon once so the engine re-reads the cadence. 0 turns it off.",
+                function()
+                    applyFireRate()
+                end),
+            Info("plan", oneShotReadout),
+            Header("Streak guns"),
+            Action("Give Minigun", giveGun("ForcePrimary", "Minigun"),
+                "LMG, 500 mag, 2000 rpm, 75 damage. A killstreak gun that needs no streak."),
+            Action("Give Laser Minigun", giveGun("ForcePrimary", "Laser Minigun"),
+                "LMG, 300 mag, 1500 rpm, 99 damage."),
+            Action("Give Akimbo AA12", giveGun("ForcePrimary", "Akimbo AA12"),
+                "Shotgun, 32 mag, 500 damage."),
+            Action("Give MGL", giveGun("ForceSecondary", "MGL"),
+                "Launcher, 6 mag, 500 damage."),
+        } }
+    end
+
+    local function ammoLine()
+        local name = activeWeaponName()
+        local entry = name and InventoryF:FindFirstChild(name)
+        local mag, reserve = entry and parseAmmo(entry.Value)
+        if not mag then return "no inventory entry" end
+        local stock = stockAmmo(name)
+        return string.format("%s  mag %d/%d  reserve %d  drift %d",
+            name, mag, stock and stock.clip or mag, reserve, ledgerDrift)
+    end
+
+    local function statPage()
+        return { title = "Stats", subtitle = "Stats", items = {
+            Info("", function() return rateReadout() end),
+            Header("Fire rate"),
+            Toggle("Fire Rate", "RateEnabled",
+                "Cached at equip, so press One or Two after changing it.",
+                function() pcall(applyFireRate) end),
+            Slider("Multiplier", "RateMul", 1, 4, 0.05, 2,
+                "Multiplies the weapon's stock rpm.",
+                function() pcall(applyFireRate) end),
+            Slider("Ceiling", "RateCap", 400, 2000, 50, 0,
+                "Upper bound. Raise it above 2000 before running a Minigun or it cuts it down.",
+                function() pcall(applyFireRate) end),
+            Header("Ammo"),
+            Info("", ammoLine),
+            Toggle("Fast Reload", "FastReload",
+                "The engine's own Fast Mags perk, 1.2x reload animation. No rounds invented.",
+                function() pcall(applyFastReload) end),
+            Action("Repair Ammo To Stock", function()
+                local fixed = repairStompedAmmo()
+                if #fixed == 0 then error("already stock") end
+            end, "There is no ammo override: the server counts your rounds, so a raised mag or reserve kills damage until you rejoin."),
+        } }
+    end
+
+    local function themePage()
+        return { title = "Theme", subtitle = "Theme", items = {
+            Cycle("Preset", "Theme", THEME_ORDER,
+                "Galaxy is the default. Custom uses the three values below.",
+                function() paintTheme() end),
+            Header("Custom"),
+            Slider("Red", "ThemeR", 0, 255, 5, 0, "Only used when Preset is Custom.",
+                function() paintTheme() end),
+            Slider("Green", "ThemeG", 0, 255, 5, 0, "Only used when Preset is Custom.",
+                function() paintTheme() end),
+            Slider("Blue", "ThemeB", 0, 255, 5, 0, "Only used when Preset is Custom.",
+                function() paintTheme() end),
+        } }
+    end
+
+    local function configPage()
+        return { title = "Config", subtitle = "Config", items = {
+            Header("Skin"),
+            Toggle("Minecraft UI", "MinecraftUI",
+                "Swap this menu for the minecraft inventory. Right shift opens it, and the "
+                .. "redstone block on its hotbar brings this one back.",
+                function(on)
+                    if _G.AURORA_SKIN_TOGGLE then
+                        _G.AURORA_SKIN_TOGGLE(on)
+                    else
+                        Config.MinecraftUI = false
+                        warn("[aurora] the minecraft skin needs the full loader script")
+                    end
+                end),
+            Header("Wheel"),
+            Toggle("Weapon Wheel", "WheelEnabled",
+                "Hold the wheel key for the gta wheel. Mouse picks the class, left and right page through its guns, release equips."),
+            Cycle("Wheel Key", "WheelKey", { "B", "V", "X", "C", "G", "T", "LeftAlt", "Tab" },
+                "The key the wheel is held on."),
+            Header("Look"),
+            Cycle("UI", "Skin", SKIN_ORDER,
+                "Whole panel look, each one lifted off a real gta 5 mod menu. Aurora is the blue default.",
+                function() paintTheme() render() end),
+            Header("File"),
+            Action("Save Config", function()
+                local ok, err = saveConfig()
+                if not ok then error(tostring(err)) end
+            end, "Writes every setting, theme included, to " .. CONFIG_PATH .. "."),
+            Action("Load Config", function()
+                loadConfig()
+                paintTheme()
+                render()
+            end, "Re-reads the saved file."),
+            Header("Maintenance"),
+            Action("Reset Target", function()
+                currentTarget, currentPart = nil, nil
+            end, "Drop the sticky target."),
+            Action("Restore Fire Rates", function()
+                restoreRates()
+            end, "Put every weapon back to its stock rpm."),
+            Action("Unload", function()
+                if _G.__AURORA then _G.__AURORA() end
+            end, "Remove the menu and every hook.", true),
+        } }
+    end
+
+    rootPage = function()
+        return { title = "Gunfight Arena", subtitle = "Aurora", items = {
+            Sub("Aimbot",  aimPage,    "Silent aim, bone selection, FOV and range."),
+            Sub("Targets", targetPage, "Who gets picked, and what has to be true first."),
+            Sub("ESP",     espPage,    "Boxes, names, health, skeletons and chams."),
+            Sub("Weapons", weaponPage, "Loadout, skins and the killstreak guns."),
+            Sub("Stats",   statPage,   "Fire rate, reload speed and the ammo ledger."),
+            Sub("Theme",   themePage,  "Accent colour. Saved with your config."),
+            Sub("Config",  configPage, "Save, load and unload."),
+        } }
+    end
+
+    paintTheme()
+    pushPage(rootPage())
+
 end
 
-local function ammoLine()
-    local name = activeWeaponName()
-    local entry = name and InventoryF:FindFirstChild(name)
-    local mag, reserve = entry and parseAmmo(entry.Value)
-    if not mag then return "no inventory entry" end
-    local stock = stockAmmo(name)
-    return string.format("%s  mag %d/%d  reserve %d  drift %d",
-        name, mag, stock and stock.clip or mag, reserve, ledgerDrift)
-end
-
-local function statPage()
-    return { title = "Stats", subtitle = "Stats", items = {
-        Info("", function() return rateReadout() end),
-        Header("Fire rate"),
-        Toggle("Fire Rate", "RateEnabled",
-            "Cached at equip, so press One or Two after changing it.",
-            function() pcall(applyFireRate) end),
-        Slider("Multiplier", "RateMul", 1, 4, 0.05, 2,
-            "Multiplies the weapon's stock rpm.",
-            function() pcall(applyFireRate) end),
-        Slider("Ceiling", "RateCap", 400, 2000, 50, 0,
-            "Upper bound. Raise it above 2000 before running a Minigun or it cuts it down.",
-            function() pcall(applyFireRate) end),
-        Header("Ammo"),
-        Info("", ammoLine),
-        Toggle("Fast Reload", "FastReload",
-            "The engine's own Fast Mags perk, 1.2x reload animation. No rounds invented.",
-            function() pcall(applyFastReload) end),
-        Action("Repair Ammo To Stock", function()
-            local fixed = repairStompedAmmo()
-            if #fixed == 0 then error("already stock") end
-        end, "There is no ammo override: the server counts your rounds, so a raised mag or reserve kills damage until you rejoin."),
-    } }
-end
-
-local function themePage()
-    return { title = "Theme", subtitle = "Theme", items = {
-        Cycle("Preset", "Theme", THEME_ORDER,
-            "Galaxy is the default. Custom uses the three values below.",
-            function() paintTheme() end),
-        Header("Custom"),
-        Slider("Red", "ThemeR", 0, 255, 5, 0, "Only used when Preset is Custom.",
-            function() paintTheme() end),
-        Slider("Green", "ThemeG", 0, 255, 5, 0, "Only used when Preset is Custom.",
-            function() paintTheme() end),
-        Slider("Blue", "ThemeB", 0, 255, 5, 0, "Only used when Preset is Custom.",
-            function() paintTheme() end),
-    } }
-end
-
-local function configPage()
-    return { title = "Config", subtitle = "Config", items = {
-        Header("Skin"),
-        Toggle("Minecraft UI", "MinecraftUI",
-            "Swap this menu for the minecraft inventory. Right shift opens it, and the "
-            .. "redstone block on its hotbar brings this one back.",
-            function(on)
-                if _G.AURORA_SKIN_TOGGLE then
-                    _G.AURORA_SKIN_TOGGLE(on)
-                else
-                    Config.MinecraftUI = false
-                    warn("[aurora] the minecraft skin needs the full loader script")
-                end
-            end),
-        Header("Wheel"),
-        Toggle("Weapon Wheel", "WheelEnabled",
-            "Hold the wheel key for the gta wheel. Mouse picks the class, left and right page through its guns, release equips."),
-        Cycle("Wheel Key", "WheelKey", { "B", "V", "X", "C", "G", "T", "LeftAlt", "Tab" },
-            "The key the wheel is held on."),
-        Header("Look"),
-        Cycle("UI", "Skin", SKIN_ORDER,
-            "Whole panel look, each one lifted off a real gta 5 mod menu. Aurora is the blue default.",
-            function() paintTheme() render() end),
-        Header("File"),
-        Action("Save Config", function()
-            local ok, err = saveConfig()
-            if not ok then error(tostring(err)) end
-        end, "Writes every setting, theme included, to " .. CONFIG_PATH .. "."),
-        Action("Load Config", function()
-            loadConfig()
-            paintTheme()
-            render()
-        end, "Re-reads the saved file."),
-        Header("Maintenance"),
-        Action("Reset Target", function()
-            currentTarget, currentPart = nil, nil
-        end, "Drop the sticky target."),
-        Action("Restore Fire Rates", function()
-            restoreRates()
-        end, "Put every weapon back to its stock rpm."),
-        Action("Unload", function()
-            if _G.__AURORA then _G.__AURORA() end
-        end, "Remove the menu and every hook.", true),
-    } }
-end
-
-local function rootPage()
-    return { title = "Gunfight Arena", subtitle = "Aurora", items = {
-        Sub("Aimbot",  aimPage,    "Silent aim, bone selection, FOV and range."),
-        Sub("Targets", targetPage, "Who gets picked, and what has to be true first."),
-        Sub("ESP",     espPage,    "Boxes, names, health, skeletons and chams."),
-        Sub("Weapons", weaponPage, "Loadout, skins and the killstreak guns."),
-        Sub("Stats",   statPage,   "Fire rate, reload speed and the ammo ledger."),
-        Sub("Theme",   themePage,  "Accent colour. Saved with your config."),
-        Sub("Config",  configPage, "Save, load and unload."),
-    } }
-end
-
-paintTheme()
-pushPage(rootPage())
-
+buildPages()
 --============================================================================
 -- live repaint  --  info rows only, everything else repaints on input
 --============================================================================

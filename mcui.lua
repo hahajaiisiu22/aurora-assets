@@ -65,7 +65,7 @@ local ASSET_HOST = "https://raw.githubusercontent.com/hahajaiisiu22/aurora-asset
 
 local ASSETS = {
     { dir = "aurora_art",   path = "aurora_art/mc_inventory.png", url = "art/mc_inventory.png", min = 20000 },
-    { dir = "aurora_art",   path = "aurora_art/mc_items.png",     url = "art/mc_items.png",     min = 20000 },
+    { dir = "aurora_art",   path = "aurora_art/mc_items_v2.png",  url = "art/mc_items.png",     min = 20000 },
     { dir = "aurora_fonts", path = "aurora_fonts/Minecraft.ttf",  url = "fonts/Minecraft.ttf",  min = 10000 },
 }
 
@@ -74,20 +74,10 @@ local assetNote = ""
 local function ensureAssets()
     if type(writefile) ~= "function" or type(isfile) ~= "function" then return end
 
-    -- min is not only an error page check: a file already on disk that is
-    -- smaller than it is an older, smaller version of the same asset, so the
-    -- new one replaces it instead of being skipped forever
-    local function stale(a)
-        if not isfile(a.path) then return true end
-        if type(readfile) ~= "function" then return false end
-        local ok, data = pcall(readfile, a.path)
-        return ok and type(data) == "string" and #data < a.min
-    end
-
     local missing = {}
     local artMissing = false
     for _, a in ipairs(ASSETS) do
-        if stale(a) then
+        if not isfile(a.path) then
             missing[#missing + 1] = a
             if a.dir == "aurora_art" then artMissing = true end
         end
@@ -149,7 +139,7 @@ local F_PIXEL = loadDiskFace("Minecraft.ttf", "Minecraft")
                 Enum.FontWeight.Regular, Enum.FontStyle.Normal)
 
 local PANEL_IMAGE = diskAsset("aurora_art/mc_inventory.png")
-local ITEM_ATLAS  = diskAsset("aurora_art/mc_items.png")
+local ITEM_ATLAS  = diskAsset("aurora_art/mc_items_v2.png")
 
 --============================================================================
 -- item sheet
@@ -457,7 +447,6 @@ local function applyIcon(img, chip, name)
 
     if ITEM_ATLAS and idx then
         img.Image = ITEM_ATLAS
-        pcall(function() img.ImageContent = Content.fromUri(ITEM_ATLAS) end)
         img.ImageRectOffset = Vector2.new((idx % ATLAS_COLS) * ATLAS_CELL,
             math.floor(idx / ATLAS_COLS) * ATLAS_CELL)
         img.ImageRectSize = Vector2.new(ATLAS_CELL, ATLAS_CELL)

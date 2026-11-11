@@ -358,6 +358,19 @@ local function ffaActive()
     return true
 end
 
+-- A bot has no Player object, but the game keeps a folder for every combatant
+-- under Players holding its stats, and that folder carries a Team attribute --
+-- the side it actually fights for. Without reading it a friendly bot looks
+-- exactly like an enemy one, which is why they were all getting boxes.
+local function botSide(name)
+    local entry = Players:FindFirstChild(name)
+    if entry and not entry:IsA("Player") then
+        local team = entry:GetAttribute("Team")
+        if team ~= nil then return tostring(team) end
+    end
+    return nil
+end
+
 local function isEnemy(model, ffa, wantBots, wantPlayers)
     local plr = playerFor(model.Name)
     if plr then
@@ -365,7 +378,14 @@ local function isEnemy(model, ffa, wantBots, wantPlayers)
         if ffa then return plr ~= LocalPlayer end
         return plr.Team ~= LocalPlayer.Team
     end
-    return wantBots
+
+    if not wantBots then return false end
+    if ffa then return true end
+
+    local side = botSide(model.Name)
+    local mine = LocalPlayer.Team and LocalPlayer.Team.Name
+    if side and mine then return side ~= mine end
+    return true
 end
 
 local function allCharacters()

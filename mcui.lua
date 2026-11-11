@@ -1,27 +1,34 @@
 --============================================================================
 -- Aurora :: Minecraft inventory skin
 --
---  The GTA menu draws a list. This one draws the survival inventory: bevelled
---  grey panel, 27 main slots, 9 hotbar slots, 4 armour slots, the offhand, the
---  2x2 crafting grid, and the player preview whose head follows the cursor.
+--  The panel is the real thing now: his concept sheet, 780x744, fetched off
+--  the asset repo and handed to the engine with getcustomasset, exactly like
+--  the GTA fonts. Nothing about the frame is drawn by this script, so it
+--  cannot look "nearly right" -- it is the picture.
+--
+--  Every interactive part sits on top of it at measured sheet coordinates:
+--
+--    slot pitch   72.78 px      slot box     64 px
+--    main grid    10 x 4 at x0=32, rows y = 339, 412, 485, 558
+--    hotbar       10 at y = 647, keys 1-9 and 0
+--    armour       x=32,  y = 32, 105, 177, 250
+--    side pair    x=323, y = 177, 250
+--    crafting     (468,105) (541,105) (468,177) (541,177), result (686,145)
+--    book         (686,250)
+--    avatar box   100,28  222 x 286
+--
+--  Those were read off the png, not guessed: the slot interiors are #898989
+--  against a #C6C6C6 panel, so a scan for that colour gives every rectangle.
 --
 --  What the slots hold:
---    main grid   every feature on the current tab, one per slot. A toggle that
---                is on gets the enchant glint; a slider shows its value as the
---                stack count.
---    hotbar      the nine you drag down there. Number keys 1-9 fire them even
---                when the inventory is shut.
---    armour      the four always-on passives for the game.
---    offhand     unload.
---    crafting    four config presets; the result slot applies the one you put
---                in, so "crafting" a preset is how you load it.
---    tabs        one per page of the module, like creative mode.
---
---  Nothing here needs a texture pack. Icons are 16x16 pixel art written into
---  an EditableImage at runtime -- confirmed present in this client alongside
---  DrawRectangle and Content.fromObject -- so the whole skin is one file.
---  Minecraft's own font is loaded off disk if it is there (same trick as the
---  GTA faces), and PressStart2P stands in when it is not.
+--    main grid   every feature on the page, one per slot. A toggle that is on
+--                gets the enchant glint; a slider shows its value as a count.
+--    hotbar      the ten you drag down. Number keys fire them with the
+--                inventory shut.
+--    armour      the always-on passives.
+--    side pair   unload, and the game's own panic toggle.
+--    crafting    four config presets, result saves to disk.
+--    book        flips to the next page, like the recipe book.
 --============================================================================
 
 local Players          = game:GetService("Players")
@@ -38,33 +45,76 @@ local Camera      = workspace.CurrentCamera
 
 local MC = {}
 
---============================================================================
--- settings
---============================================================================
-
 local Settings = {
     OpenKey   = Enum.KeyCode.E,
-    Scale     = 0,          -- 0 = pick from the screen height
+    Height    = 0.86,       -- share of the screen the panel takes
     Sounds    = true,
     Blur      = true,
     HeadTrack = true,
 }
 
-local FONT_DIR = "aurora_fonts/"
+--============================================================================
+-- assets
+--  Same door the GTA faces came through: pull the file once into the exec
+--  workspace, then getcustomasset turns it into an rbxasset the engine cannot
+--  tell from an upload. The fetch runs in its own thread -- HttpGet has to
+--  pause mid call, and an executor's script thread is not always allowed to.
+--============================================================================
 
---============================================================================
--- font
---  Minecraft.ttf off disk when he drops it next to the GTA faces; the engine's
---  own PressStart2P otherwise, which is the only built in family that is
---  actually pixel art.
---============================================================================
+local ASSET_HOST = "https://raw.githubusercontent.com/hahajaiisiu22/aurora-assets/main/"
+
+local ASSETS = {
+    { dir = "aurora_art",   path = "aurora_art/mc_inventory.png", url = "art/mc_inventory.png", min = 20000 },
+    { dir = "aurora_fonts", path = "aurora_fonts/Minecraft.ttf",  url = "fonts/Minecraft.ttf",  min = 10000 },
+}
+
+local assetNote = ""
+
+local function ensureAssets()
+    if type(writefile) ~= "function" or type(isfile) ~= "function" then return end
+
+    local missing = {}
+    for _, a in ipairs(ASSETS) do
+        if not isfile(a.path) then missing[#missing + 1] = a end
+    end
+    if #missing == 0 then return end
+
+    assetNote = "fetching the panel art -- run the script again in a moment"
+
+    task.spawn(function()
+        local got, failed = 0, 0
+        for _, a in ipairs(missing) do
+            if type(makefolder) == "function" and type(isfolder) == "function"
+                and not isfolder(a.dir) then
+                pcall(makefolder, a.dir)
+            end
+            local ok, body = pcall(function() return game:HttpGet(ASSET_HOST .. a.url, true) end)
+            -- a short body is an error page, not a png
+            if ok and type(body) == "string" and #body >= a.min and pcall(writefile, a.path, body) then
+                got += 1
+            else
+                failed += 1
+            end
+        end
+        print(string.format("[aurora] inventory art: %d fetched, %d failed -- re-run", got, failed))
+    end)
+end
+
+ensureAssets()
+
+local function diskAsset(relPath)
+    if type(getcustomasset) ~= "function" or type(isfile) ~= "function" then return nil end
+    if not isfile(relPath) then return nil end
+    local ok, id = pcall(getcustomasset, relPath)
+    return ok and id or nil
+end
 
 local function loadDiskFace(fileName, familyName)
     if type(getcustomasset) ~= "function" or type(writefile) ~= "function" then return nil end
-    if type(isfile) ~= "function" or not isfile(FONT_DIR .. fileName) then return nil end
+    if type(isfile) ~= "function" or not isfile("aurora_fonts/" .. fileName) then return nil end
     local ok, f = pcall(function()
-        local asset   = getcustomasset(FONT_DIR .. fileName)
-        local famPath = FONT_DIR .. familyName .. ".json"
+        local asset   = getcustomasset("aurora_fonts/" .. fileName)
+        local famPath = "aurora_fonts/" .. familyName .. ".json"
         writefile(famPath, HttpService:JSONEncode({
             name  = familyName,
             faces = { { name = "Regular", weight = 400, style = "normal", assetId = asset } },
@@ -78,8 +128,10 @@ local F_PIXEL = loadDiskFace("Minecraft.ttf", "Minecraft")
     or Font.new("rbxasset://fonts/families/PressStart2P.json",
                 Enum.FontWeight.Regular, Enum.FontStyle.Normal)
 
+local PANEL_IMAGE = diskAsset("aurora_art/mc_inventory.png")
+
 --============================================================================
--- palette, straight off the vanilla widget sheet
+-- palette, taken off the sheet itself
 --============================================================================
 
 local C = {
@@ -87,8 +139,7 @@ local C = {
     light    = Color3.fromRGB(255, 255, 255),
     shade    = Color3.fromRGB(85,  85,  85),
     edge     = Color3.fromRGB(0,   0,   0),
-    slot     = Color3.fromRGB(139, 139, 139),
-    slotDark = Color3.fromRGB(55,  55,  55),
+    slot     = Color3.fromRGB(137, 137, 139),
     text     = Color3.fromRGB(63,  63,  63),
     white    = Color3.fromRGB(255, 255, 255),
     grey     = Color3.fromRGB(170, 170, 170),
@@ -96,13 +147,13 @@ local C = {
     tipEdge  = Color3.fromRGB(80,  0,   255),
     glint    = Color3.fromRGB(190, 110, 255),
     lore     = Color3.fromRGB(170, 170, 170),
-    aqua     = Color3.fromRGB(85,  255, 255),
 }
 
 --============================================================================
 -- pixel canvas -> EditableImage
---  Every icon is a 16x16 grid filled by a draw function, then flushed once
---  into an EditableImage that every slot showing that item can share.
+--  Item icons are 16x16 sprites painted at runtime. CreateEditableImage,
+--  DrawRectangle and Content.fromObject are all in this client, so the icons
+--  need no uploads either.
 --============================================================================
 
 local SIZE = 16
@@ -110,9 +161,7 @@ local SIZE = 16
 local Canvas = {}
 Canvas.__index = Canvas
 
-local function canvas()
-    return setmetatable({ px = {} }, Canvas)
-end
+local function canvas() return setmetatable({ px = {} }, Canvas) end
 
 function Canvas:set(x, y, col)
     if x < 0 or y < 0 or x >= SIZE or y >= SIZE then return end
@@ -125,7 +174,6 @@ function Canvas:rect(x, y, w, h, col)
     end
 end
 
--- "3,4 5,6" -> pixels. Short, and it reads like the sprite it is.
 function Canvas:plot(list, col)
     for pair in string.gmatch(list, "[^%s]+") do
         local x, y = string.match(pair, "(%-?%d+),(%-?%d+)")
@@ -133,8 +181,8 @@ function Canvas:plot(list, col)
     end
 end
 
-function Canvas:diag(x, y, n, col, dx, dy)
-    for i = 0, n - 1 do self:set(x + i * (dx or 1), y + i * (dy or -1), col) end
+function Canvas:diag(x, y, n, col)
+    for i = 0, n - 1 do self:set(x + i, y - i, col) end
 end
 
 local imageSupport = nil
@@ -161,12 +209,6 @@ function Canvas:flush()
     end
     return img
 end
-
---============================================================================
--- the icon set
---  Twelve items, each a function on a fresh canvas. Colours are the vanilla
---  ones where vanilla has an equivalent.
---============================================================================
 
 local P = {
     iron     = Color3.fromRGB(220, 220, 220),
@@ -196,23 +238,24 @@ local P = {
     diamondD = Color3.fromRGB(55,  165, 165),
     needle   = Color3.fromRGB(210, 60,  50),
     gold     = Color3.fromRGB(245, 205, 80),
+    white    = Color3.fromRGB(255, 255, 255),
 }
 
 local ICONS = {}
 
 ICONS.sword = function(c)
-    c:diag(4, 11, 9, P.iron)                 -- blade
-    c:diag(5, 12, 8, P.ironD)                -- its shaded side
-    c:plot("12,2 13,2 13,3", P.iron)         -- tip
-    c:plot("2,10 3,11 4,12 5,13", P.ironD)   -- guard, across the base
-    c:plot("1,14 2,13 1,13 2,14", P.wood)    -- grip
+    c:diag(4, 11, 9, P.iron)
+    c:diag(5, 12, 8, P.ironD)
+    c:plot("12,2 13,2 13,3", P.iron)
+    c:plot("2,10 3,11 4,12 5,13", P.ironD)
+    c:plot("1,14 2,13 1,13 2,14", P.wood)
 end
 
 ICONS.bow = function(c)
     c:plot("9,1 10,2 11,3 12,4 12,5 12,6 12,9 12,10 12,11 11,12 10,13 9,14", P.wood)
     c:plot("8,1 9,2 10,3 11,4 11,11 10,12 9,13 8,14", P.woodD)
     c:plot("9,2 9,3 9,4 9,5 9,6 9,7 9,8 9,9 9,10 9,11 9,12 9,13", P.strand)
-    c:diag(3, 11, 7, P.woodD)                -- the nocked arrow
+    c:diag(3, 11, 7, P.woodD)
     c:plot("2,13 2,12 3,13", P.feather)
 end
 
@@ -311,19 +354,17 @@ end
 local iconCache = {}
 local function iconContent(name)
     if not name or not ICONS[name] then return nil end
-    if iconCache[name] ~= nil then return iconCache[name] end
-    if not canEdit() then iconCache[name] = false return false end
+    if iconCache[name] ~= nil then return iconCache[name] or nil end
+    if not canEdit() then iconCache[name] = false return nil end
     local ok, content = pcall(function()
         local c = canvas()
         ICONS[name](c)
         return Content.fromObject(c:flush())
     end)
     iconCache[name] = ok and content or false
-    return iconCache[name]
+    return iconCache[name] or nil
 end
 
--- when the client will not give us an EditableImage, a slot still has to read
--- as something: a flat chip in the icon's dominant colour
 local FLAT = {
     sword = P.iron, bow = P.wood, eye = P.eyeMid, feather = P.feather,
     boots = P.leather, potion = P.brew, tnt = P.tnt, compass = P.ironD,
@@ -332,22 +373,26 @@ local FLAT = {
 }
 
 --============================================================================
--- geometry
---  Vanilla coordinates on the 176x166 inventory sheet, so everything lands
---  where the eye expects it. One scale factor turns them into pixels.
+-- sheet coordinates
+--  Everything below is in png pixels on the 780x744 sheet and converted to
+--  scale, so the overlay lands on the art at any size.
 --============================================================================
 
-local W, H = 176, 166
-local S = 3
+local IMG_W, IMG_H = 780, 744
+local SLOT         = 64
+local PITCH        = 72.78
 
-local function pickScale()
-    if Settings.Scale > 0 then return Settings.Scale end
-    local vp = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
-    return math.clamp(math.floor(vp.Y / 300), 2, 5)
-end
+local COLX = {}
+for i = 0, 9 do COLX[i + 1] = 32 + i * PITCH end
 
-local function off(x, y) return UDim2.fromOffset(x * S, y * S) end
-local function dim(w, h) return UDim2.fromOffset(w * S, h * S) end
+local ROWY   = { 339, 412, 485, 558 }
+local HOTY   = 647
+local ARMOUR = { 32, 105, 177, 250 }
+local SIDEX, SIDEY = 323, { 177, 250 }
+local CRAFT  = { { 468, 105 }, { 541, 105 }, { 468, 177 }, { 541, 177 } }
+local RESULT = { 686, 145 }
+local BOOK   = { 686, 250 }
+local AVATAR = { 100, 28, 222, 286 }
 
 local function new(class, props, parent)
     local i = Instance.new(class)
@@ -356,77 +401,32 @@ local function new(class, props, parent)
     return i
 end
 
-local function solid(parent, x, y, w, h, col, z)
-    return new("Frame", {
-        Position = off(x, y), Size = dim(w, h),
-        BackgroundColor3 = col, BorderSizePixel = 0, ZIndex = z or 1,
-    }, parent)
-end
-
--- the raised panel bevel: white top and left, grey bottom and right
-local function bevel(parent, x, y, w, h, z)
-    z = z or 1
-    solid(parent, x, y, w, h, C.panel, z)
-    solid(parent, x, y, w, 1, C.light, z + 1)
-    solid(parent, x, y, 1, h, C.light, z + 1)
-    solid(parent, x, y + h - 1, w, 1, C.shade, z + 1)
-    solid(parent, x + w - 1, y, 1, h, C.shade, z + 1)
-end
-
--- a slot is the inverse bevel: dark top and left, white bottom and right
-local function slotBox(parent, x, y, size, z)
-    local s = size or 18
-    z = z or 3
-    local holder = new("Frame", {
-        Position = off(x, y), Size = dim(s, s),
-        BackgroundColor3 = C.slot, BorderSizePixel = 0, ZIndex = z,
-    }, parent)
-    solid(holder, 0, 0, s, 1, C.slotDark, z + 1)
-    solid(holder, 0, 0, 1, s, C.slotDark, z + 1)
-    solid(holder, 0, s - 1, s, 1, C.light, z + 1)
-    solid(holder, s - 1, 0, 1, s, C.light, z + 1)
-    return holder
-end
-
-local function pixelText(parent, x, y, text, col, z, align)
-    local size = 7 * S
-    local shadow = new("TextLabel", {
-        Position = off(x, y) + UDim2.fromOffset(math.max(1, S // 2), math.max(1, S // 2)),
-        Size = UDim2.fromOffset(0, size), AutomaticSize = Enum.AutomaticSize.X,
-        BackgroundTransparency = 1, FontFace = F_PIXEL, Text = text,
-        TextSize = size, TextColor3 = (col or C.text):Lerp(C.edge, 0.72),
-        TextXAlignment = align or Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Center, ZIndex = (z or 8) - 1,
-    }, parent)
-    local main = new("TextLabel", {
-        Position = off(x, y), Size = UDim2.fromOffset(0, size),
-        AutomaticSize = Enum.AutomaticSize.X,
-        BackgroundTransparency = 1, FontFace = F_PIXEL, Text = text,
-        TextSize = size, TextColor3 = col or C.text,
-        TextXAlignment = align or Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Center, ZIndex = z or 8,
-    }, parent)
-    return main, shadow
-end
+local function sheetPos(x, y) return UDim2.fromScale(x / IMG_W, y / IMG_H) end
+local function sheetSize(w, h) return UDim2.fromScale(w / IMG_W, h / IMG_H) end
 
 --============================================================================
--- gui root
+-- state
 --============================================================================
 
-local gui, panel, world
-local blur
-local tip, tipName, tipLore, tipBg
-local dragIcon
-local slots = {}          -- every live slot widget
-local hotSlots = {}
-local tabButtons = {}
+local gui, panel, art, world, blur
+local tip, tipName, tipLore
+local dragIcon, headerLabel, noteLabel
+local slots, gridSlots, hotSlots, armourSlots, craftSlots = {}, {}, {}, {}, {}
+local resultSlot, sideSlots, bookSlot
 local avatar = { parts = {} }
 
-local openState = false
-local currentTab = 1
-local gridOffset = 0
-local dragging = nil      -- { item = ..., from = "grid"/"hot", index = n }
-local hovered = nil
+local spec        = nil
+local openState   = false
+local currentPage = 1
+local gridOffset  = 0
+local dragging    = nil
+local hovered     = nil
+local hotbar      = {}
+
+local GRID_SLOTS = 40
+local HOT_SLOTS  = 10
+
+local function cfg() return (spec and spec.config) or {} end
 
 local function host()
     if type(gethui) == "function" then
@@ -439,30 +439,39 @@ local function host()
 end
 
 --============================================================================
--- the spec
---  A module hands over tabs of items. An item is whatever the GTA menu already
---  produces -- toggle, slider, action, cycle -- plus an icon name.
+-- sound
+--  rbxasset://sounds/volume_slider.ogg ships inside the client, so the clicks
+--  cost no upload and no network.
 --============================================================================
 
-local spec = nil          -- { title, config, tabs = { {name, icon, items} }, armour, offhand, presets }
+local clickSound = new("Sound", {
+    SoundId = "rbxasset://sounds/volume_slider.ogg", Volume = 0.35,
+}, game:GetService("SoundService"))
 
-local function cfg() return (spec and spec.config) or {} end
-
-local function itemState(item)
-    if item.kind == "toggle" then
-        return cfg()[item.key] and true or false
-    end
-    return false
+local function blip(speed, vol)
+    if not Settings.Sounds then return end
+    clickSound.PlaybackSpeed = speed or 1
+    clickSound.Volume = vol or 0.35
+    pcall(function() clickSound:Play() end)
 end
 
--- the stack count in the corner of the slot: a slider shows its value, a cycle
--- shows nothing (its value goes in the tooltip), a toggle shows nothing
+--============================================================================
+-- items
+--============================================================================
+
+local function itemState(item)
+    return item.kind == "toggle" and cfg()[item.key] == true
+end
+
 local function itemCount(item)
     if item.kind == "slider" then
         local v = cfg()[item.key]
         if type(v) ~= "number" then return "" end
         if v >= 1000 then return string.format("%.0fk", v / 1000) end
         return string.format("%." .. (item.dec or 0) .. "f", v)
+    elseif item.kind == "cycle" then
+        local v = cfg()[item.key]
+        return v and string.sub(tostring(v), 1, 4) or ""
     end
     return ""
 end
@@ -481,7 +490,9 @@ local function fireItem(item, dir)
     elseif item.kind == "cycle" then
         local list = item.list or {}
         local at = 1
-        for i, v in ipairs(list) do if v == conf[item.key] then at = i break end end
+        for i, v in ipairs(list) do
+            if v == conf[item.key] then at = i break end
+        end
         at = ((at - 1 + (dir or 1)) % math.max(1, #list)) + 1
         conf[item.key] = list[at]
         if item.onChange then pcall(item.onChange, conf[item.key]) end
@@ -490,97 +501,68 @@ local function fireItem(item, dir)
     end
 end
 
-local function tabItems(index)
-    local tab = spec and spec.tabs and spec.tabs[index]
-    return (tab and tab.items) or {}
+local function pageItems(index)
+    local page = spec and spec.pages and spec.pages[index]
+    return (page and page.items) or {}
 end
-
---============================================================================
--- hotbar binding
---  Drag an item onto a hotbar slot and the number key fires it, inventory open
---  or shut. Stored by label so it survives a config reload.
---============================================================================
-
-local hotbar = {}         -- [1..9] = item
 
 local function hotbarLabels()
     local out = {}
-    for i = 1, 9 do out[i] = hotbar[i] and hotbar[i].label or "" end
+    for i = 1, HOT_SLOTS do out[i] = hotbar[i] and hotbar[i].label or "" end
     return out
 end
 
 local function restoreHotbar(labels)
     if type(labels) ~= "table" then return end
     local byLabel = {}
-    for t = 1, #(spec.tabs or {}) do
-        for _, item in ipairs(tabItems(t)) do
+    for p = 1, #((spec and spec.pages) or {}) do
+        for _, item in ipairs(pageItems(p)) do
             if item.label then byLabel[item.label] = item end
         end
     end
-    for i = 1, 9 do
+    for i = 1, HOT_SLOTS do
         local want = labels[i]
         hotbar[i] = (want and want ~= "" and byLabel[want]) or nil
     end
 end
 
 --============================================================================
--- sound
---  rbxasset://sounds/volume_slider.ogg is in the client's own content folder,
---  so it needs no upload and no network. Three playback speeds stand in for
---  Minecraft's click, place and pick up.
---============================================================================
-
-local clickSound = new("Sound", {
-    SoundId = "rbxasset://sounds/volume_slider.ogg", Volume = 0.35,
-}, game:GetService("SoundService"))
-
-local function blip(speed, vol)
-    if not Settings.Sounds then return end
-    clickSound.PlaybackSpeed = speed or 1
-    clickSound.Volume = vol or 0.35
-    pcall(function() clickSound:Play() end)
-end
-
---============================================================================
 -- player preview
---  Vanilla rotates the whole model a little and the head a lot more, both
---  toward the cursor. A clone in a ViewportFrame has nothing animating it, so
---  every part is placed by hand off the root: body parts follow the root's
---  rotation, the head and whatever is strapped to it get the extra turn.
+--  Vanilla turns the body a little and the head more, both toward the cursor.
+--  A clone in a ViewportFrame has nothing animating it, so each part is placed
+--  by hand off the root every frame; the head and anything strapped to it get
+--  the extra turn.
 --============================================================================
 
 local function headish(part)
     if part.Name == "Head" then return true end
     local acc = part:FindFirstAncestorWhichIsA("Accessory")
-    if acc then
-        local att = part:FindFirstChildWhichIsA("Attachment")
-        local name = (att and att.Name) or acc.Name
-        return string.find(name, "Hat") ~= nil or string.find(name, "Hair") ~= nil
-            or string.find(name, "Face") ~= nil or string.find(name, "Head") ~= nil
-    end
-    return false
+    if not acc then return false end
+    local att = part:FindFirstChildWhichIsA("Attachment")
+    local name = (att and att.Name) or acc.Name
+    return string.find(name, "Hat") ~= nil or string.find(name, "Hair") ~= nil
+        or string.find(name, "Face") ~= nil or string.find(name, "Head") ~= nil
 end
 
-local function buildAvatar(parent, x, y, w, h)
+local function buildAvatar(parent)
     local vp = new("ViewportFrame", {
-        Position = off(x, y), Size = dim(w, h),
+        Position = sheetPos(AVATAR[1], AVATAR[2]),
+        Size = sheetSize(AVATAR[3], AVATAR[4]),
         BackgroundTransparency = 1, ZIndex = 4,
-        LightDirection = Vector3.new(-0.3, -0.6, -1),
+        LightDirection = Vector3.new(-0.3, -0.7, -1),
         LightColor = Color3.fromRGB(255, 252, 240),
-        Ambient = Color3.fromRGB(150, 150, 155),
+        Ambient = Color3.fromRGB(160, 160, 165),
     }, parent)
 
-    avatar.vp = vp
-    avatar.parts = {}
-    avatar.model = nil
+    avatar.vp, avatar.parts, avatar.model = vp, {}, nil
 
     local char = LocalPlayer.Character
     if not char then return vp end
 
-    local wasArchivable = char.Archivable
+    local was = char.Archivable
     char.Archivable = true
     local ok, clone = pcall(function() return char:Clone() end)
-    char.Archivable = wasArchivable
+    char.Archivable = was
     if not ok or not clone then return vp end
 
     for _, d in ipairs(clone:GetDescendants()) do
@@ -589,105 +571,91 @@ local function buildAvatar(parent, x, y, w, h)
             d:Destroy()
         end
     end
-    local hum = clone:FindFirstChildWhichIsA("Humanoid")
-    if hum then hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
 
     local root = clone:FindFirstChild("HumanoidRootPart") or clone.PrimaryPart
-        or clone:FindFirstChild("Torso") or clone:FindFirstChild("UpperTorso")
+        or clone:FindFirstChild("UpperTorso") or clone:FindFirstChild("Torso")
     if not root then clone:Destroy() return vp end
 
-    local baseRoot = root.CFrame
-    local headPart = clone:FindFirstChild("Head")
-    local relHead  = headPart and (baseRoot:Inverse() * headPart.CFrame) or nil
+    local base    = root.CFrame
+    local head    = clone:FindFirstChild("Head")
+    local relHead = head and (base:Inverse() * head.CFrame) or nil
 
     for _, d in ipairs(clone:GetDescendants()) do
         if d:IsA("BasePart") then
-            local rel = baseRoot:Inverse() * d.CFrame
+            local rel = base:Inverse() * d.CFrame
             avatar.parts[#avatar.parts + 1] = {
                 part = d, rel = rel, head = headish(d),
                 relToHead = relHead and (relHead:Inverse() * rel) or nil,
             }
-            d.Anchored = true
-            d.CanCollide = false
+            d.Anchored, d.CanCollide = true, false
         end
     end
 
-    clone.Parent = vp
-    avatar.model   = clone
-    avatar.base    = baseRoot
+    clone.Parent  = vp
+    avatar.model  = clone
+    avatar.base   = base
     avatar.relHead = relHead
 
     local cam = new("Camera", {}, vp)
     vp.CurrentCamera = cam
+    cam.FieldOfView = 32
     cam.CFrame = CFrame.lookAt(
-        baseRoot.Position + baseRoot.LookVector * -4.6 + Vector3.new(0, 0.35, 0),
-        baseRoot.Position + Vector3.new(0, 0.1, 0))
-    cam.FieldOfView = 36
+        base.Position + base.LookVector * -5.2 + Vector3.new(0, 0.3, 0),
+        base.Position + Vector3.new(0, 0.05, 0))
 
     return vp
 end
 
 local function stepAvatar()
     if not avatar.model or not avatar.base then return end
-    local base = avatar.base
     local yaw, pitch = 0, 0
 
     if Settings.HeadTrack and avatar.vp then
         local m    = UserInputService:GetMouseLocation()
         local abs  = avatar.vp.AbsolutePosition
         local size = avatar.vp.AbsoluteSize
-        local cx   = abs.X + size.X * 0.5
-        local cy   = abs.Y + size.Y * 0.5
-        local vpSize = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
-        yaw   = math.clamp((m.X - cx) / (vpSize.X * 0.35), -1, 1) * 0.8
-        pitch = math.clamp((m.Y - cy) / (vpSize.Y * 0.35), -1, 1) * 0.5
+        local vp   = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
+        yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * 0.85
+        pitch = math.clamp((m.Y - (abs.Y + size.Y * 0.5)) / (vp.Y * 0.32), -1, 1) * 0.5
     end
 
-    local bodyCF = base * CFrame.Angles(0, yaw * 0.35, 0)
-    local headCF = nil
-    if avatar.relHead then
-        headCF = bodyCF * avatar.relHead * CFrame.Angles(pitch, yaw * 0.65, 0)
-    end
+    local bodyCF = avatar.base * CFrame.Angles(0, yaw * 0.35, 0)
+    local headCF = avatar.relHead
+        and (bodyCF * avatar.relHead * CFrame.Angles(pitch, yaw * 0.65, 0)) or nil
 
-    for _, entry in ipairs(avatar.parts) do
-        if entry.head and headCF and entry.relToHead then
-            entry.part.CFrame = headCF * entry.relToHead
+    for _, e in ipairs(avatar.parts) do
+        if e.head and headCF and e.relToHead then
+            e.part.CFrame = headCF * e.relToHead
         else
-            entry.part.CFrame = bodyCF * entry.rel
+            e.part.CFrame = bodyCF * e.rel
         end
     end
 end
 
 --============================================================================
 -- tooltip
---  The vanilla item tooltip: near black box, two tone purple border, item name
---  in white, the lore under it in grey.
 --============================================================================
 
 local function buildTip(parent)
     tip = new("Frame", {
-        BackgroundTransparency = 1, Visible = false, ZIndex = 60,
-        Size = UDim2.fromOffset(10, 10),
+        BackgroundColor3 = C.tipBg, BorderSizePixel = 0, Visible = false,
+        ZIndex = 60, Size = UDim2.fromOffset(10, 10),
     }, parent)
-    tipBg = new("Frame", {
-        BackgroundColor3 = C.tipBg, BorderSizePixel = 0,
-        Size = UDim2.fromScale(1, 1), ZIndex = 60,
-    }, tip)
     new("UIStroke", {
-        Color = C.tipEdge, Thickness = math.max(1, S - 1),
-        ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Transparency = 0.35,
-    }, tipBg)
+        Color = C.tipEdge, Thickness = 2, Transparency = 0.3,
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, tip)
     tipName = new("TextLabel", {
-        Position = UDim2.fromOffset(4 * S, 3 * S), Size = UDim2.fromOffset(0, 7 * S),
+        Position = UDim2.fromOffset(10, 7), Size = UDim2.fromOffset(0, 18),
         AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1,
-        FontFace = F_PIXEL, TextSize = 7 * S, TextColor3 = C.white,
-        TextXAlignment = Enum.TextXAlignment.Left, Text = "", ZIndex = 62,
+        FontFace = F_PIXEL, TextSize = 15, TextColor3 = C.white, Text = "",
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 62,
     }, tip)
     tipLore = new("TextLabel", {
-        Position = UDim2.fromOffset(4 * S, 12 * S), Size = UDim2.fromOffset(0, 7 * S),
+        Position = UDim2.fromOffset(10, 28), Size = UDim2.fromOffset(0, 16),
         AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1,
-        FontFace = F_PIXEL, TextSize = 6 * S, TextColor3 = C.lore,
-        TextXAlignment = Enum.TextXAlignment.Left, Text = "", ZIndex = 62,
+        FontFace = F_PIXEL, TextSize = 12, TextColor3 = C.lore, Text = "",
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 62,
     }, tip)
 end
 
@@ -697,72 +665,74 @@ local function showTip(name, lore)
     tipLore.Text = lore or ""
     tipLore.Visible = (lore ~= nil and lore ~= "")
     local wide = math.max(tipName.AbsoluteSize.X, tipLore.Visible and tipLore.AbsoluteSize.X or 0)
-    tip.Size = UDim2.fromOffset(wide + 8 * S, (tipLore.Visible and 22 or 13) * S)
+    tip.Size = UDim2.fromOffset(wide + 20, tipLore.Visible and 52 or 32)
     tip.Visible = true
 end
 
-local function hideTip()
-    if tip then tip.Visible = false end
-end
+local function hideTip() if tip then tip.Visible = false end end
 
 local function moveTip()
     if not tip or not tip.Visible then return end
-    local m = UserInputService:GetMouseLocation()
+    local m  = UserInputService:GetMouseLocation()
     local vp = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
-    local x = m.X + 4 * S
-    local y = m.Y - 2 * S
-    if x + tip.AbsoluteSize.X > vp.X then x = m.X - tip.AbsoluteSize.X - 4 * S end
+    local x, y = m.X + 16, m.Y - 6
+    if x + tip.AbsoluteSize.X > vp.X then x = m.X - tip.AbsoluteSize.X - 16 end
     if y + tip.AbsoluteSize.Y > vp.Y then y = vp.Y - tip.AbsoluteSize.Y end
     tip.Position = UDim2.fromOffset(x, y)
 end
 
 --============================================================================
--- slots
+-- slots, laid over the art
 --============================================================================
 
-local SLOT = 18
-
 local function makeSlot(parent, x, y, role, index)
-    local holder = slotBox(parent, x, y, SLOT)
+    local holder = new("Frame", {
+        Position = sheetPos(x, y), Size = sheetSize(SLOT, SLOT),
+        BackgroundTransparency = 1, ZIndex = 5,
+    }, parent)
 
     local hover = new("Frame", {
-        Position = off(1, 1), Size = dim(16, 16), BackgroundColor3 = C.white,
-        BackgroundTransparency = 0.72, BorderSizePixel = 0, Visible = false, ZIndex = 5,
+        Position = UDim2.fromScale(0.03, 0.03), Size = UDim2.fromScale(0.94, 0.94),
+        BackgroundColor3 = C.white, BackgroundTransparency = 0.72,
+        BorderSizePixel = 0, Visible = false, ZIndex = 6,
     }, holder)
 
     local icon = new("ImageLabel", {
-        Position = off(1, 1), Size = dim(16, 16), BackgroundTransparency = 1,
-        ScaleType = Enum.ScaleType.Stretch, ResampleMode = Enum.ResamplerMode.Pixelated,
-        Image = "", Visible = false, ZIndex = 6,
+        Position = UDim2.fromScale(0.125, 0.125), Size = UDim2.fromScale(0.75, 0.75),
+        BackgroundTransparency = 1, Image = "", Visible = false, ZIndex = 8,
+        ResampleMode = Enum.ResamplerMode.Pixelated,
     }, holder)
 
     local chip = new("Frame", {
-        Position = off(4, 4), Size = dim(10, 10), BorderSizePixel = 0,
-        BackgroundColor3 = C.slot, Visible = false, ZIndex = 6,
+        Position = UDim2.fromScale(0.22, 0.22), Size = UDim2.fromScale(0.56, 0.56),
+        BackgroundColor3 = C.grey, BorderSizePixel = 0, Visible = false, ZIndex = 8,
     }, holder)
 
     local glint = new("Frame", {
-        Position = off(1, 1), Size = dim(16, 16), BackgroundColor3 = C.glint,
-        BackgroundTransparency = 0.45, BorderSizePixel = 0, Visible = false, ZIndex = 7,
+        Position = UDim2.fromScale(0.08, 0.08), Size = UDim2.fromScale(0.84, 0.84),
+        BackgroundColor3 = C.glint, BackgroundTransparency = 0.5,
+        BorderSizePixel = 0, Visible = false, ZIndex = 9,
     }, holder)
     local grad = new("UIGradient", {
         Rotation = 35,
         Transparency = NumberSequence.new({
             NumberSequenceKeypoint.new(0, 1),
             NumberSequenceKeypoint.new(0.42, 1),
-            NumberSequenceKeypoint.new(0.5, 0.25),
+            NumberSequenceKeypoint.new(0.5, 0.2),
             NumberSequenceKeypoint.new(0.58, 1),
             NumberSequenceKeypoint.new(1, 1),
         }),
     }, glint)
 
     local count = new("TextLabel", {
-        Position = off(0, 8), Size = dim(17, 9), BackgroundTransparency = 1,
-        FontFace = F_PIXEL, TextSize = 6 * S, TextColor3 = C.white,
+        Position = UDim2.fromScale(0, 0.45), Size = UDim2.fromScale(0.92, 0.5),
+        BackgroundTransparency = 1, FontFace = F_PIXEL, TextScaled = true,
+        TextColor3 = C.white, Text = "", ZIndex = 10,
         TextXAlignment = Enum.TextXAlignment.Right,
-        TextYAlignment = Enum.TextYAlignment.Bottom, Text = "", ZIndex = 9,
+        TextYAlignment = Enum.TextYAlignment.Bottom,
     }, holder)
-    new("UIStroke", { Color = C.edge, Thickness = math.max(1, S - 2), Transparency = 0.2 }, count)
+    new("UIStroke", { Color = C.edge, Thickness = 2, Transparency = 0.15 }, count)
+    new("UITextSizeConstraint", { MaxTextSize = 16 }, count)
 
     local btn = new("TextButton", {
         Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "",
@@ -770,9 +740,9 @@ local function makeSlot(parent, x, y, role, index)
     }, holder)
 
     local slot = {
-        role = role, index = index, item = nil,
-        holder = holder, icon = icon, chip = chip, glint = glint,
-        grad = grad, count = count, hover = hover, btn = btn,
+        role = role, index = index, item = nil, holder = holder, icon = icon,
+        chip = chip, glint = glint, grad = grad, count = count,
+        hover = hover, btn = btn,
     }
 
     function slot.setItem(item)
@@ -790,7 +760,7 @@ local function makeSlot(parent, x, y, role, index)
             chip.BackgroundColor3 = FLAT[item.icon] or C.grey
             chip.Visible, icon.Visible = true, false
         end
-        count.Text = itemCount(item)
+        count.Text  = itemCount(item)
         glint.Visible = itemState(item)
     end
 
@@ -798,10 +768,12 @@ local function makeSlot(parent, x, y, role, index)
     return slot
 end
 
-local function slotTipText(slot)
+local function slotTip(slot)
     local item = slot.item
     if not item then
-        if slot.role == "hot" then return "Empty slot", "drag a feature here for key " .. slot.index end
+        if slot.role == "hot" then
+            return "Empty slot", "drag a feature here for key " .. (slot.index % 10)
+        end
         return nil
     end
     local name = item.label or "?"
@@ -812,111 +784,101 @@ local function slotTipText(slot)
         name = name .. "  " .. tostring(cfg()[item.key])
     end
     if slot.role == "grid" then
-        lore = (lore or "") .. (lore and "   " or "") .. "shift-click to hotbar"
+        lore = (lore and (lore .. "   ") or "") .. "shift-click to hotbar"
     end
     return name, lore
 end
 
 --============================================================================
 -- panel
---  Vanilla sheet coordinates, shifted down by the tab strip.
 --============================================================================
 
-local TOP      = 16
-local gridSlots, armourSlots, craftSlots = {}, {}, {}
-local resultSlot, offhandSlot
-local titleLabel, pageLabel
-
-local function buildTabs(parent)
-    for i, tab in ipairs(spec.tabs or {}) do
-        local x = (i - 1) * 28
-        local holder = new("Frame", {
-            Position = off(x, 0), Size = dim(27, TOP + 1),
-            BackgroundColor3 = C.panel, BorderSizePixel = 0, ZIndex = 2,
-        }, parent)
-        solid(holder, 0, 0, 27, 1, C.light, 3)
-        solid(holder, 0, 0, 1, TOP, C.light, 3)
-        solid(holder, 26, 0, 1, TOP, C.shade, 3)
-
-        local icon = new("ImageLabel", {
-            Position = off(6, 1), Size = dim(16, 16), BackgroundTransparency = 1,
-            ResampleMode = Enum.ResamplerMode.Pixelated, ZIndex = 5, Visible = false,
-        }, holder)
-        local content = iconContent(tab.icon)
-        if content then icon.ImageContent = content icon.Visible = true end
-
-        local btn = new("TextButton", {
-            Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "",
-            AutoButtonColor = false, ZIndex = 20,
-        }, holder)
-
-        tabButtons[i] = { holder = holder, btn = btn, icon = icon, name = tab.name }
+local function panelSize()
+    local vp = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
+    local h  = math.floor(vp.Y * Settings.Height)
+    local w  = math.floor(h * IMG_W / IMG_H)
+    if w > vp.X * 0.95 then
+        w = math.floor(vp.X * 0.95)
+        h = math.floor(w * IMG_H / IMG_W)
     end
+    return UDim2.fromOffset(w, h)
 end
 
 local function buildPanel()
-    S = pickScale()
-
     gui = new("ScreenGui", {
         Name = "AuroraInventory", IgnoreGuiInset = true, DisplayOrder = 9999,
         ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Global,
-        Enabled = true,
     })
     gui.Parent = host()
 
     world = new("Frame", {
         Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.edge,
-        BackgroundTransparency = 0.72, BorderSizePixel = 0, Visible = false, ZIndex = 1,
+        BackgroundTransparency = 0.6, BorderSizePixel = 0, Visible = false, ZIndex = 1,
     }, gui)
 
     panel = new("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-        Size = dim(W, H + TOP), BackgroundTransparency = 1, Visible = false, ZIndex = 2,
+        Size = panelSize(), BackgroundTransparency = 1, Visible = false, ZIndex = 2,
     }, gui)
 
-    buildTabs(panel)
-    bevel(panel, 0, TOP, W, H, 2)
+    art = new("ImageLabel", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = PANEL_IMAGE and 1 or 0,
+        BackgroundColor3 = C.panel, BorderSizePixel = 0, ZIndex = 2,
+        Image = PANEL_IMAGE or "", ResampleMode = Enum.ResamplerMode.Pixelated,
+    }, panel)
 
-    titleLabel = pixelText(panel, 8, TOP + 5, spec.title or "Inventory", C.text, 9)
-    pageLabel  = pixelText(panel, 8, TOP + 74, "", C.text, 9)
+    headerLabel = new("TextLabel", {
+        Position = UDim2.fromScale(0, -0.055), Size = UDim2.fromScale(1, 0.045),
+        BackgroundTransparency = 1, FontFace = F_PIXEL, TextScaled = true,
+        TextColor3 = C.white, Text = "", ZIndex = 30,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, panel)
+    new("UIStroke", { Color = C.edge, Thickness = 2, Transparency = 0.2 }, headerLabel)
+    new("UITextSizeConstraint", { MaxTextSize = 22 }, headerLabel)
 
-    -- armour column, then the preview, then the offhand: the vanilla left half
+    noteLabel = new("TextLabel", {
+        Position = UDim2.fromScale(0, 1.01), Size = UDim2.fromScale(1, 0.04),
+        BackgroundTransparency = 1, FontFace = F_PIXEL, TextScaled = true,
+        TextColor3 = C.white, Text = assetNote, ZIndex = 30,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, panel)
+    new("UIStroke", { Color = C.edge, Thickness = 2, Transparency = 0.2 }, noteLabel)
+    new("UITextSizeConstraint", { MaxTextSize = 16 }, noteLabel)
+
+    buildAvatar(panel)
+
     for i = 1, 4 do
-        armourSlots[i] = makeSlot(panel, 7, TOP + 7 + (i - 1) * SLOT, "armour", i)
+        armourSlots[i] = makeSlot(panel, 32, ARMOUR[i], "armour", i)
     end
-    offhandSlot = makeSlot(panel, 77, TOP + 61, "offhand", 1)
-    buildAvatar(panel, 26, TOP + 8, 50, 68)
-
-    -- crafting 2x2 and its result
-    local cpos = { { 98, 17 }, { 116, 17 }, { 98, 35 }, { 116, 35 } }
-    for i, p in ipairs(cpos) do
-        craftSlots[i] = makeSlot(panel, p[1], TOP + p[2], "craft", i)
+    sideSlots = {
+        makeSlot(panel, SIDEX, SIDEY[1], "side", 1),
+        makeSlot(panel, SIDEX, SIDEY[2], "side", 2),
+    }
+    for i, p in ipairs(CRAFT) do
+        craftSlots[i] = makeSlot(panel, p[1], p[2], "craft", i)
     end
-    resultSlot = makeSlot(panel, 153, TOP + 27, "result", 1)
-    pixelText(panel, 98, TOP + 8, "PRESETS", C.text, 9)
+    resultSlot = makeSlot(panel, RESULT[1], RESULT[2], "result", 1)
+    bookSlot   = makeSlot(panel, BOOK[1], BOOK[2], "book", 1)
 
-    -- the 27
-    for row = 0, 2 do
-        for col = 0, 8 do
-            local n = row * 9 + col + 1
-            gridSlots[n] = makeSlot(panel, 7 + col * SLOT, TOP + 83 + row * SLOT, "grid", n)
+    for row = 1, 4 do
+        for col = 1, 10 do
+            local n = (row - 1) * 10 + col
+            gridSlots[n] = makeSlot(panel, COLX[col], ROWY[row], "grid", n)
         end
     end
-
-    -- the 9
-    for col = 0, 8 do
-        hotSlots[col + 1] = makeSlot(panel, 7 + col * SLOT, TOP + 141, "hot", col + 1)
-        pixelText(panel, 11 + col * SLOT, TOP + 137, tostring(col + 1), C.text, 25)
+    for col = 1, 10 do
+        hotSlots[col] = makeSlot(panel, COLX[col], HOTY, "hot", col)
+        new("TextLabel", {
+            Position = sheetPos(COLX[col], HOTY - 26), Size = sheetSize(SLOT, 22),
+            BackgroundTransparency = 1, FontFace = F_PIXEL, TextScaled = true,
+            TextColor3 = C.text, Text = tostring(col % 10), ZIndex = 12,
+        }, panel)
     end
 
     dragIcon = new("ImageLabel", {
-        Size = dim(16, 16), BackgroundTransparency = 1, Visible = false, ZIndex = 80,
-        ResampleMode = Enum.ResamplerMode.Pixelated,
+        Size = UDim2.fromOffset(42, 42), BackgroundTransparency = 1, Visible = false,
+        ZIndex = 80, ResampleMode = Enum.ResamplerMode.Pixelated,
     }, gui)
-    new("Frame", {
-        Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.grey,
-        BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = 79,
-    }, dragIcon)
 
     buildTip(gui)
 
@@ -930,40 +892,32 @@ end
 --============================================================================
 
 local function refresh()
-    local items = tabItems(currentTab)
+    local items = pageItems(currentPage)
     local total = #items
+    local maxOff = math.max(0, math.ceil((total - GRID_SLOTS) / 10) * 10)
+    gridOffset = math.clamp(gridOffset, 0, maxOff)
 
-    gridOffset = math.clamp(gridOffset, 0, math.max(0, math.ceil((total - 27) / 9)) * 9)
-
-    for n = 1, 27 do
-        gridSlots[n].setItem(items[n + gridOffset])
-    end
-    for i = 1, 9 do
-        hotSlots[i].setItem(hotbar[i])
-    end
+    for n = 1, GRID_SLOTS do gridSlots[n].setItem(items[n + gridOffset]) end
+    for i = 1, HOT_SLOTS do hotSlots[i].setItem(hotbar[i]) end
     for i = 1, 4 do
         armourSlots[i].setItem((spec.armour or {})[i])
         craftSlots[i].setItem((spec.presets or {})[i])
     end
-    offhandSlot.setItem(spec.offhand)
+    sideSlots[1].setItem((spec.side or {})[1])
+    sideSlots[2].setItem((spec.side or {})[2])
     resultSlot.setItem(spec.result)
+    bookSlot.setItem(spec.bookItem or { kind = "action", label = "Pages", icon = "book" })
 
-    for i, tb in ipairs(tabButtons) do
-        local on = (i == currentTab)
-        tb.holder.Position = off((i - 1) * 28, on and 0 or 2)
-        tb.holder.BackgroundColor3 = on and C.panel or C.panel:Lerp(C.shade, 0.35)
-    end
+    local page = spec.pages[currentPage]
+    headerLabel.Text = string.format("%s  --  %s  (%d/%d)",
+        string.upper(spec.title or "AURORA"),
+        string.upper((page and page.name) or "?"),
+        currentPage, #spec.pages)
 
-    if titleLabel then
-        local tab = spec.tabs and spec.tabs[currentTab]
-        titleLabel.Text = string.upper((tab and tab.name) or spec.title or "INVENTORY")
-    end
-    if pageLabel then
-        pageLabel.Text = (total > 27)
-            and string.format("%d-%d of %d   scroll", gridOffset + 1,
-                math.min(total, gridOffset + 27), total)
-            or ""
-    end
+    noteLabel.Text = (total > GRID_SLOTS)
+        and string.format("%d-%d of %d   scroll the grid for more",
+            gridOffset + 1, math.min(total, gridOffset + GRID_SLOTS), total)
+        or assetNote
 end
 
 MC.refresh = refresh
@@ -992,18 +946,19 @@ local function unbindSink()
 end
 
 local function setOpen(on)
-    if openState == on then return end
+    if openState == on or not panel then return end
     openState = on
 
+    panel.Size   = panelSize()
     panel.Visible = on
     world.Visible = on
     if not on then hideTip() end
 
     if blur then
         blur.Enabled = true
-        TweenService:Create(blur, TweenInfo.new(0.18), { Size = on and 8 or 0 }):Play()
+        TweenService:Create(blur, TweenInfo.new(0.18), { Size = on and 10 or 0 }):Play()
         if not on then
-            task.delay(0.22, function()
+            task.delay(0.24, function()
                 if blur and not openState then blur.Enabled = false end
             end)
         end
@@ -1025,20 +980,26 @@ MC.setOpen = setOpen
 function MC.toggle() setOpen(not openState) end
 function MC.isOpen() return openState end
 
+local function flipPage(dir)
+    local n = #((spec and spec.pages) or {})
+    if n == 0 then return end
+    currentPage = ((currentPage - 1 + (dir or 1)) % n) + 1
+    gridOffset = 0
+    blip(1.2, 0.3)
+    refresh()
+end
+
 --============================================================================
--- slot interaction
---  left click fires, right click steps the other way, shift-click sends a
---  feature to the first free hotbar slot, and a drag drops it on the key you
---  want. Scrolling a slider slot nudges it, like scrolling the hotbar.
+-- interaction
 --============================================================================
 
 local function firstFreeHot()
-    for i = 1, 9 do if not hotbar[i] then return i end end
-    return 9
+    for i = 1, HOT_SLOTS do if not hotbar[i] then return i end end
+    return 1
 end
 
 local function bindHot(index, item)
-    for i = 1, 9 do if hotbar[i] == item then hotbar[i] = nil end end
+    for i = 1, HOT_SLOTS do if hotbar[i] == item then hotbar[i] = nil end end
     hotbar[index] = item
     if spec.onHotbar then pcall(spec.onHotbar, hotbarLabels()) end
     blip(1.5, 0.3)
@@ -1049,7 +1010,13 @@ local function wireSlot(slot)
     slot.btn.MouseEnter:Connect(function()
         hovered = slot
         slot.hover.Visible = true
-        local name, lore = slotTipText(slot)
+        if slot.role == "book" then
+            local page = spec.pages[currentPage]
+            showTip("Pages", string.format("%s  (%d/%d) -- click for the next one",
+                (page and page.name) or "", currentPage, #spec.pages))
+            return
+        end
+        local name, lore = slotTip(slot)
         if name then showTip(name, lore) else hideTip() end
     end)
 
@@ -1060,19 +1027,19 @@ local function wireSlot(slot)
 
     slot.btn.MouseButton1Down:Connect(function()
         if not slot.item then return end
-        if slot.role == "grid" or slot.role == "hot" then
-            dragging = { item = slot.item, from = slot }
-            local content = iconContent(slot.item.icon)
-            if content then
-                dragIcon.ImageContent = content
-                dragIcon.Visible = true
-            end
+        if slot.role ~= "grid" and slot.role ~= "hot" then return end
+        dragging = { item = slot.item, from = slot }
+        local content = iconContent(slot.item.icon)
+        if content then
+            dragIcon.ImageContent = content
+            dragIcon.Visible = true
         end
     end)
 
     slot.btn.MouseButton1Click:Connect(function()
-        -- a drag that ended somewhere else is handled on release, not here
         if dragging and dragging.from ~= slot then return end
+
+        if slot.role == "book" then flipPage(1) return end
 
         local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
             or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
@@ -1097,12 +1064,13 @@ local function wireSlot(slot)
             fireItem(slot.item, 1)
             blip(itemState(slot.item) and 1.45 or 1.0, 0.32)
             refresh()
-            local name, lore = slotTipText(slot)
+            local name, lore = slotTip(slot)
             if name then showTip(name, lore) end
         end
     end)
 
     slot.btn.MouseButton2Click:Connect(function()
+        if slot.role == "book" then flipPage(-1) return end
         if slot.role == "hot" then
             hotbar[slot.index] = nil
             if spec.onHotbar then pcall(spec.onHotbar, hotbarLabels()) end
@@ -1120,29 +1088,17 @@ local function wireSlot(slot)
     slot.btn.InputChanged:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
         local dir = input.Position.Z > 0 and 1 or -1
-        if slot.item and (slot.item.kind == "slider" or slot.item.kind == "cycle") then
-            fireItem(slot.item, dir)
+        local item = slot.item
+        if item and (item.kind == "slider" or item.kind == "cycle") then
+            fireItem(item, dir)
             refresh()
-            local name, lore = slotTipText(slot)
+            local name, lore = slotTip(slot)
             if name then showTip(name, lore) end
         elseif slot.role == "grid" then
-            gridOffset = gridOffset - dir * 9
+            gridOffset = gridOffset - dir * 10
             refresh()
         end
     end)
-end
-
-local function wireTabs()
-    for i, tb in ipairs(tabButtons) do
-        tb.btn.MouseButton1Click:Connect(function()
-            currentTab = i
-            gridOffset = 0
-            blip(1.2, 0.3)
-            refresh()
-        end)
-        tb.btn.MouseEnter:Connect(function() showTip(tb.name, nil) end)
-        tb.btn.MouseLeave:Connect(hideTip)
-    end
 end
 
 --============================================================================
@@ -1156,21 +1112,15 @@ local function wireInput()
         if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
         if UserInputService:GetFocusedTextBox() then return end
 
-        if input.KeyCode == Settings.OpenKey then
-            MC.toggle()
-            return
-        end
-
-        if openState and input.KeyCode == Enum.KeyCode.Escape then
-            setOpen(false)
-            return
-        end
-
+        if input.KeyCode == Settings.OpenKey then MC.toggle() return end
+        if openState and input.KeyCode == Enum.KeyCode.Escape then setOpen(false) return end
+        if openState and input.KeyCode == Enum.KeyCode.Right then flipPage(1) return end
+        if openState and input.KeyCode == Enum.KeyCode.Left then flipPage(-1) return end
         if processed and not openState then return end
 
         local n = tonumber(string.match(tostring(input.KeyCode), "KeyCode%.(%d)$"))
-        if n and n >= 1 and n <= 9 then
-            local item = hotbar[n]
+        if n then
+            local item = hotbar[n == 0 and 10 or n]
             if item then
                 fireItem(item, 1)
                 blip(itemState(item) and 1.45 or 1.0, 0.32)
@@ -1193,28 +1143,31 @@ local function wireInput()
         dragging = nil
         if dragIcon then dragIcon.Visible = false end
     end)
+
+    if Camera then
+        conns[#conns + 1] = Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            if panel then panel.Size = panelSize() end
+        end)
+    end
 end
 
 local function stepLoop()
+    if not openState then return end
     local t = os.clock()
-    if openState then
-        stepAvatar()
-        moveTip()
-        for _, slot in ipairs(slots) do
-            if slot.item then
-                local on = itemState(slot.item)
-                slot.glint.Visible = on
-                if on then
-                    slot.grad.Offset = Vector2.new(((t * 0.55) % 2) - 1, 0)
-                end
-                local c = itemCount(slot.item)
-                if slot.count.Text ~= c then slot.count.Text = c end
-            end
+    stepAvatar()
+    moveTip()
+    for _, slot in ipairs(slots) do
+        if slot.item then
+            local on = itemState(slot.item)
+            slot.glint.Visible = on
+            if on then slot.grad.Offset = Vector2.new(((t * 0.55) % 2) - 1, 0) end
+            local c = itemCount(slot.item)
+            if slot.count.Text ~= c then slot.count.Text = c end
         end
-        if dragging and dragIcon.Visible then
-            local m = UserInputService:GetMouseLocation()
-            dragIcon.Position = UDim2.fromOffset(m.X - 8 * S, m.Y - 8 * S)
-        end
+    end
+    if dragging and dragIcon.Visible then
+        local m = UserInputService:GetMouseLocation()
+        dragIcon.Position = UDim2.fromOffset(m.X - 21, m.Y - 21)
     end
 end
 
@@ -1224,25 +1177,24 @@ end
 
 function MC.mount(s)
     assert(type(s) == "table", "mount needs a spec")
-    assert(type(s.tabs) == "table" and #s.tabs > 0, "spec needs at least one tab")
+    assert(type(s.pages) == "table" and #s.pages > 0, "spec needs at least one page")
 
-    if MC.unload then pcall(MC.unload) end
+    pcall(function() if _G.__AURORA_MC then _G.__AURORA_MC() end end)
 
     spec = s
     Settings.OpenKey = s.openKey or Settings.OpenKey
-    slots, hotSlots, tabButtons = {}, {}, {}
-    gridSlots, armourSlots, craftSlots = {}, {}, {}
-    currentTab, gridOffset, openState = 1, 0, false
+    slots, gridSlots, hotSlots, armourSlots, craftSlots = {}, {}, {}, {}, {}
+    hotbar = {}
+    currentPage, gridOffset, openState = 1, 0, false
 
     buildPanel()
     for _, slot in ipairs(slots) do wireSlot(slot) end
-    wireTabs()
     wireInput()
     restoreHotbar(s.hotbar)
     refresh()
 
     RunService:BindToRenderStep(STEP_BIND, Enum.RenderPriority.Last.Value, stepLoop)
-
+    _G.__AURORA_MC = MC.unload
     return MC
 end
 
@@ -1254,63 +1206,63 @@ function MC.unload()
     if blur then pcall(function() blur:Destroy() end) blur = nil end
     if gui then pcall(function() gui:Destroy() end) gui = nil end
     openState = false
-    slots, hotSlots, tabButtons = {}, {}, {}
+    slots, hotSlots = {}, {}
+    _G.__AURORA_MC = nil
 end
 
 MC.Settings = Settings
 MC.icons    = ICONS
-
 _G.AuroraMC = MC
 
 --============================================================================
 -- demo spec
---  Runs on its own in any game so the skin can be looked at. A module replaces
---  this by calling MC.mount with its own tabs; the item shape is the one the
---  GTA menu already uses, with an icon name added.
+--  Runs standalone so the skin can be looked at in any game. A module hands
+--  MC.mount its own pages instead; the item shape is the one the GTA menu
+--  already produces, with an icon name added.
 --============================================================================
 
-if _G.AURORA_MC_SPEC then
-    return MC.mount(_G.AURORA_MC_SPEC)
-end
+if _G.AURORA_MC_SPEC then return MC.mount(_G.AURORA_MC_SPEC) end
 
 local Config = {
     Fullbright = false, NoFog = false, WalkSpeed = 16, JumpPower = 50,
     InfJump = false, Aimbot = false, Silent = false, FovSize = 120,
     Esp = false, Tracers = false, Chams = false, KillAura = false,
     AntiFling = false, AntiVoid = false, GodMode = false, AntiRagdoll = false,
+    Bone = "Head", Smooth = 3,
 }
 
 local function applyChar()
     local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+    local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
     if not hum then return end
-    hum.WalkSpeed  = Config.WalkSpeed
-    hum.JumpPower  = Config.JumpPower
     hum.UseJumpPower = true
+    hum.WalkSpeed    = Config.WalkSpeed
+    hum.JumpPower    = Config.JumpPower
 end
 
 local function applyLight()
-    Lighting.Brightness   = Config.Fullbright and 3 or 2
-    Lighting.ClockTime    = Config.Fullbright and 14 or Lighting.ClockTime
-    Lighting.Ambient      = Config.Fullbright and Color3.fromRGB(178, 178, 178)
+    Lighting.Brightness = Config.Fullbright and 3 or 2
+    Lighting.Ambient    = Config.Fullbright and Color3.fromRGB(178, 178, 178)
         or Color3.fromRGB(70, 70, 70)
-    Lighting.FogEnd       = Config.NoFog and 1e6 or 100000
+    Lighting.FogEnd     = Config.NoFog and 1e6 or 100000
 end
 
 UserInputService.JumpRequest:Connect(function()
     if not Config.InfJump then return end
     local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+    local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
     if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
 end)
 
 local function Toggle(label, key, icon, desc, onChange)
-    return { kind = "toggle", label = label, key = key, icon = icon,
-             desc = desc, onChange = onChange }
+    return { kind = "toggle", label = label, key = key, icon = icon, desc = desc, onChange = onChange }
 end
 local function Slider(label, key, icon, min, max, step, desc, onChange)
-    return { kind = "slider", label = label, key = key, icon = icon, min = min,
-             max = max, step = step, dec = 0, desc = desc, onChange = onChange }
+    return { kind = "slider", label = label, key = key, icon = icon, min = min, max = max,
+             step = step, dec = 0, desc = desc, onChange = onChange }
+end
+local function Cycle(label, key, icon, list, desc)
+    return { kind = "cycle", label = label, key = key, icon = icon, list = list, desc = desc }
 end
 local function Action(label, icon, run, desc)
     return { kind = "action", label = label, icon = icon, run = run, desc = desc }
@@ -1321,31 +1273,32 @@ local demoSpec = {
     config  = Config,
     openKey = Enum.KeyCode.E,
 
-    tabs = {
-        { name = "Combat", icon = "sword", items = {
-            Toggle("Aimbot",      "Aimbot",   "sword",   "Pull onto the closest head."),
-            Toggle("Silent Aim",  "Silent",   "bow",     "Bend the shot instead of the camera."),
-            Slider("FOV",         "FovSize",  "compass", 20, 500, 10, "Pixels of search radius."),
-            Toggle("Kill Aura",   "KillAura", "tnt",     "Hit anything that comes close."),
+    pages = {
+        { name = "Combat", items = {
+            Toggle("Aimbot",       "Aimbot",    "sword",   "Pull onto the closest head."),
+            Toggle("Silent Aim",   "Silent",    "bow",     "Bend the shot, not the camera."),
+            Slider("FOV",          "FovSize",   "compass", 20, 500, 10, "Search radius in pixels."),
+            Slider("Smoothing",    "Smooth",    "clock",   1, 20, 1,    "Higher is slower and softer."),
+            Cycle ("Bone",         "Bone",      "eye",     { "Head", "Torso", "Nearest" }, "Where the aim lands."),
+            Toggle("Kill Aura",    "KillAura",  "tnt",     "Hit anything that comes close."),
         } },
-        { name = "Visuals", icon = "eye", items = {
-            Toggle("Player ESP",  "Esp",      "eye",     "Boxes and names through walls."),
-            Toggle("Tracers",     "Tracers",  "compass", "Line from the bottom of the screen."),
-            Toggle("Chams",       "Chams",    "potion",  "Fill bodies with colour."),
-            Toggle("Fullbright",  "Fullbright","apple",  "Flatten the lighting.", applyLight),
-            Toggle("No Fog",      "NoFog",    "diamond", "Push the fog to the horizon.", applyLight),
+        { name = "Visuals", items = {
+            Toggle("Player ESP",   "Esp",       "eye",     "Boxes and names through walls."),
+            Toggle("Tracers",      "Tracers",   "compass", "Line from the bottom of the screen."),
+            Toggle("Chams",        "Chams",     "potion",  "Fill bodies with colour."),
+            Toggle("Fullbright",   "Fullbright","apple",   "Flatten the lighting.", applyLight),
+            Toggle("No Fog",       "NoFog",     "diamond", "Push the fog to the horizon.", applyLight),
         } },
-        { name = "Movement", icon = "feather", items = {
-            Slider("Walk Speed",  "WalkSpeed","boots",   16, 200, 2, "Default is 16.", applyChar),
-            Slider("Jump Power",  "JumpPower","feather", 50, 300, 5, "Default is 50.", applyChar),
-            Toggle("Infinite Jump","InfJump", "feather",  "Jump again in mid air."),
-            Action("Apply Now",   "clock", applyChar, "Push speed and jump onto your character."),
+        { name = "Movement", items = {
+            Slider("Walk Speed",   "WalkSpeed", "boots",   16, 200, 2, "Default is 16.", applyChar),
+            Slider("Jump Power",   "JumpPower", "feather", 50, 300, 5, "Default is 50.", applyChar),
+            Toggle("Infinite Jump","InfJump",   "feather", "Jump again in mid air."),
+            Action("Apply Now",    "clock", applyChar, "Push speed and jump onto your character."),
         } },
-        { name = "Misc", icon = "book", items = {
+        { name = "Misc", items = {
             Action("Rejoin", "book", function()
                 game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
             end, "Same place, fresh server."),
-            Action("Rejoin Later", "clock", function() end, "Placeholder."),
         } },
     },
 
@@ -1356,8 +1309,10 @@ local demoSpec = {
         Toggle("Anti Ragdoll", "AntiRagdoll", "shield", "Stand back up."),
     },
 
-    offhand = { kind = "action", label = "Unload", icon = "book",
-        desc = "Remove the menu and every hook.", run = function() MC.unload() end },
+    side = {
+        Action("Unload", "shield", function() MC.unload() end, "Remove the menu and every hook."),
+        Action("Panic",  "clock",  function() MC.setOpen(false) end, "Shut the inventory now."),
+    },
 
     presets = {
         { kind = "action", label = "Preset 1", icon = "diamond", desc = "click load, shift-click save" },
@@ -1366,11 +1321,11 @@ local demoSpec = {
         { kind = "action", label = "Preset 4", icon = "diamond", desc = "click load, shift-click save" },
     },
 
-    result = { kind = "action", label = "Save To Disk", icon = "book",
-        desc = "Write the current settings out." },
+    result = { kind = "action", label = "Save To Disk", icon = "clock",
+               desc = "Write the current settings out." },
 
     hotbar = { "Aimbot", "Silent Aim", "Player ESP", "Fullbright", "Walk Speed",
-               "Infinite Jump", "Kill Aura", "", "" },
+               "Infinite Jump", "Kill Aura", "Chams", "No Fog", "Apply Now" },
 }
 
 MC.mount(demoSpec)

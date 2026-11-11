@@ -46,7 +46,7 @@ local Camera      = workspace.CurrentCamera
 local MC = {}
 
 local Settings = {
-    OpenKey   = Enum.KeyCode.E,
+    OpenKey   = Enum.KeyCode.RightShift,
     Height    = 0.60,       -- share of the screen the panel takes
     Sounds    = false,
     Blur      = true,
@@ -65,6 +65,7 @@ local ASSET_HOST = "https://raw.githubusercontent.com/hahajaiisiu22/aurora-asset
 
 local ASSETS = {
     { dir = "aurora_art",   path = "aurora_art/mc_inventory.png", url = "art/mc_inventory.png", min = 20000 },
+    { dir = "aurora_art",   path = "aurora_art/mc_items.png",     url = "art/mc_items.png",     min = 2000  },
     { dir = "aurora_fonts", path = "aurora_fonts/Minecraft.ttf",  url = "fonts/Minecraft.ttf",  min = 10000 },
 }
 
@@ -78,7 +79,7 @@ local function ensureAssets()
     for _, a in ipairs(ASSETS) do
         if not isfile(a.path) then
             missing[#missing + 1] = a
-            if a.path == "aurora_art/mc_inventory.png" then artMissing = true end
+            if a.dir == "aurora_art" then artMissing = true end
         end
     end
     if #missing == 0 then return end
@@ -135,6 +136,55 @@ local F_PIXEL = loadDiskFace("Minecraft.ttf", "Minecraft")
                 Enum.FontWeight.Regular, Enum.FontStyle.Normal)
 
 local PANEL_IMAGE = diskAsset("aurora_art/mc_inventory.png")
+local ITEM_ATLAS  = diskAsset("aurora_art/mc_items.png")
+
+--============================================================================
+-- item sheet
+--  25 vanilla item textures packed into one 80x80 png, five across. They are
+--  the real 16x16 originals -- the files he downloaded were 8x nearest
+--  upscales, so scaling them back down restored the exact pixels. One image
+--  means one download; a slot takes its own 16x16 window out of it with
+--  ImageRectOffset, and Pixelated resampling blows it back up crisp.
+--============================================================================
+
+local ATLAS_COLS = 5
+local ATLAS = {
+    ["arrow"] = 0,
+    ["barrier"] = 1,
+    ["bow"] = 2,
+    ["chest"] = 3,
+    ["clock"] = 4,
+    ["command_block"] = 5,
+    ["compass"] = 6,
+    ["crossbow"] = 7,
+    ["diamond_boots"] = 8,
+    ["diamond_sword"] = 9,
+    ["elytra"] = 10,
+    ["enchanted_book"] = 11,
+    ["ender_eye"] = 12,
+    ["ender_pearl"] = 13,
+    ["glass_pane"] = 14,
+    ["glowstone_dust"] = 15,
+    ["golden_apple"] = 16,
+    ["oak_boat"] = 17,
+    ["rabbit_foot"] = 18,
+    ["redstone_block"] = 19,
+    ["shield"] = 20,
+    ["spyglass"] = 21,
+    ["tnt"] = 22,
+    ["totem_of_undying"] = 23,
+    ["water_bucket"] = 24,
+}
+
+-- the old hand drawn names still work, so a module written against them does
+-- not have to be touched
+local ALIAS = {
+    sword = "diamond_sword", eye = "ender_eye", boots = "diamond_boots",
+    book = "enchanted_book", potion = "water_bucket", apple = "golden_apple",
+    diamond = "redstone_block", feather = "elytra", pearl = "ender_pearl",
+    glass = "glass_pane", light = "glowstone_dust", boat = "oak_boat",
+    totem = "totem_of_undying", jump = "rabbit_foot", command = "command_block",
+}
 
 --============================================================================
 -- palette, taken off the sheet itself
@@ -371,7 +421,42 @@ local function iconContent(name)
     return iconCache[name] or nil
 end
 
-local FLAT = {
+local FLAT
+
+local function applyIcon(img, chip, name)
+    local key = ALIAS[name or ""] or name
+    local idx = key and ATLAS[key] or nil
+
+    if ITEM_ATLAS and idx then
+        img.Image = ITEM_ATLAS
+        pcall(function() img.ImageContent = Content.fromUri(ITEM_ATLAS) end)
+        img.ImageRectOffset = Vector2.new((idx % ATLAS_COLS) * 16,
+            math.floor(idx / ATLAS_COLS) * 16)
+        img.ImageRectSize = Vector2.new(16, 16)
+        img.Visible = true
+        if chip then chip.Visible = false end
+        return true
+    end
+
+    -- no sheet on disk yet: the painted sprite, then a plain chip
+    local content = iconContent(name)
+    if content then
+        img.ImageRectSize = Vector2.zero
+        img.ImageContent = content
+        img.Visible = true
+        if chip then chip.Visible = false end
+        return true
+    end
+
+    img.Visible = false
+    if chip then
+        chip.BackgroundColor3 = FLAT[name] or C.grey
+        chip.Visible = true
+    end
+    return false
+end
+
+FLAT = {
     sword = P.iron, bow = P.wood, eye = P.eyeMid, feather = P.feather,
     boots = P.leather, potion = P.brew, tnt = P.tnt, compass = P.ironD,
     book = P.cover, apple = P.apple, diamond = P.diamond, shield = P.wood,
@@ -604,12 +689,13 @@ local function buildAvatar(parent)
 
     local cam = new("Camera", {}, vp)
     vp.CurrentCamera = cam
-    cam.FieldOfView = 32
     -- in FRONT of him: LookVector is the way he faces, so the camera stands
-    -- out along it and looks back down it
+    -- out along it and looks back down it. Far enough out, and aimed at the
+    -- waist, that he fits head to toe in the box.
+    cam.FieldOfView = 30
     cam.CFrame = CFrame.lookAt(
-        base.Position + base.LookVector * 5.2 + Vector3.new(0, 0.3, 0),
-        base.Position + Vector3.new(0, 0.05, 0))
+        base.Position + base.LookVector * 9.5 + Vector3.new(0, 0.2, 0),
+        base.Position + Vector3.new(0, -0.35, 0))
 
     return vp
 end
@@ -623,9 +709,7 @@ local function stepAvatar()
         local abs  = avatar.vp.AbsolutePosition
         local size = avatar.vp.AbsoluteSize
         local vp   = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
-        -- negative: the camera looks back along his facing, so a cursor to the
-        -- right has to turn him the other way round to look at it
-        yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * -0.85
+        yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * 0.85
         pitch = math.clamp((m.Y - (abs.Y + size.Y * 0.5)) / (vp.Y * 0.32), -1, 1) * 0.5
     end
 
@@ -762,14 +846,7 @@ local function makeSlot(parent, x, y, role, index)
             count.Text = ""
             return
         end
-        local content = iconContent(item.icon)
-        if content then
-            icon.ImageContent = content
-            icon.Visible, chip.Visible = true, false
-        else
-            chip.BackgroundColor3 = FLAT[item.icon] or C.grey
-            chip.Visible, icon.Visible = true, false
-        end
+        applyIcon(icon, chip, item.icon)
         count.Text  = itemCount(item)
         glint.Visible = itemState(item)
     end
@@ -1039,11 +1116,7 @@ local function wireSlot(slot)
         if not slot.item then return end
         if slot.role ~= "grid" and slot.role ~= "hot" then return end
         dragging = { item = slot.item, from = slot }
-        local content = iconContent(slot.item.icon)
-        if content then
-            dragIcon.ImageContent = content
-            dragIcon.Visible = true
-        end
+        if applyIcon(dragIcon, nil, slot.item.icon) then dragIcon.Visible = true end
     end)
 
     slot.btn.MouseButton1Click:Connect(function()
@@ -1281,32 +1354,32 @@ end
 local demoSpec = {
     title   = "Aurora",
     config  = Config,
-    openKey = Enum.KeyCode.E,
+    openKey = Enum.KeyCode.RightShift,
 
     pages = {
         { name = "Combat", items = {
-            Toggle("Aimbot",       "Aimbot",    "sword",   "Pull onto the closest head."),
-            Toggle("Silent Aim",   "Silent",    "bow",     "Bend the shot, not the camera."),
-            Slider("FOV",          "FovSize",   "compass", 20, 500, 10, "Search radius in pixels."),
+            Toggle("Aimbot",       "Aimbot",    "diamond_sword",   "Pull onto the closest head."),
+            Toggle("Silent Aim",   "Silent",    "crossbow",     "Bend the shot, not the camera."),
+            Slider("FOV",          "FovSize",   "spyglass", 20, 500, 10, "Search radius in pixels."),
             Slider("Smoothing",    "Smooth",    "clock",   1, 20, 1,    "Higher is slower and softer."),
-            Cycle ("Bone",         "Bone",      "eye",     { "Head", "Torso", "Nearest" }, "Where the aim lands."),
+            Cycle ("Bone",         "Bone",      "arrow",     { "Head", "Torso", "Nearest" }, "Where the aim lands."),
             Toggle("Kill Aura",    "KillAura",  "tnt",     "Hit anything that comes close."),
         } },
         { name = "Visuals", items = {
-            Toggle("Player ESP",   "Esp",       "eye",     "Boxes and names through walls."),
+            Toggle("Player ESP",   "Esp",       "ender_eye",     "Boxes and names through walls."),
             Toggle("Tracers",      "Tracers",   "compass", "Line from the bottom of the screen."),
-            Toggle("Chams",        "Chams",     "potion",  "Fill bodies with colour."),
-            Toggle("Fullbright",   "Fullbright","apple",   "Flatten the lighting.", applyLight),
-            Toggle("No Fog",       "NoFog",     "diamond", "Push the fog to the horizon.", applyLight),
+            Toggle("Chams",        "Chams",     "water_bucket",  "Fill bodies with colour."),
+            Toggle("Fullbright",   "Fullbright","glowstone_dust",   "Flatten the lighting.", applyLight),
+            Toggle("No Fog",       "NoFog",     "glass_pane", "Push the fog to the horizon.", applyLight),
         } },
         { name = "Movement", items = {
-            Slider("Walk Speed",   "WalkSpeed", "boots",   16, 200, 2, "Default is 16.", applyChar),
-            Slider("Jump Power",   "JumpPower", "feather", 50, 300, 5, "Default is 50.", applyChar),
-            Toggle("Infinite Jump","InfJump",   "feather", "Jump again in mid air."),
-            Action("Apply Now",    "clock", applyChar, "Push speed and jump onto your character."),
+            Slider("Walk Speed",   "WalkSpeed", "diamond_boots",   16, 200, 2, "Default is 16.", applyChar),
+            Slider("Jump Power",   "JumpPower", "rabbit_foot", 50, 300, 5, "Default is 50.", applyChar),
+            Toggle("Infinite Jump","InfJump",   "elytra", "Jump again in mid air."),
+            Action("Apply Now",    "redstone_block", applyChar, "Push speed and jump onto your character."),
         } },
         { name = "Misc", items = {
-            Action("Rejoin", "book", function()
+            Action("Rejoin", "oak_boat", function()
                 game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
             end, "Same place, fresh server."),
         } },
@@ -1314,24 +1387,24 @@ local demoSpec = {
 
     armour = {
         Toggle("Anti Fling",   "AntiFling",   "shield", "Clamp silly velocities."),
-        Toggle("Anti Void",    "AntiVoid",    "shield", "Catch a fall out of the map."),
-        Toggle("God Mode",     "GodMode",     "apple",  "Whatever the game allows."),
-        Toggle("Anti Ragdoll", "AntiRagdoll", "shield", "Stand back up."),
+        Toggle("Anti Void",    "AntiVoid",    "ender_pearl", "Catch a fall out of the map."),
+        Toggle("God Mode",     "GodMode",     "golden_apple",  "Whatever the game allows."),
+        Toggle("Anti Ragdoll", "AntiRagdoll", "totem_of_undying", "Stand back up."),
     },
 
     side = {
-        Action("Unload", "shield", function() MC.unload() end, "Remove the menu and every hook."),
-        Action("Panic",  "clock",  function() MC.setOpen(false) end, "Shut the inventory now."),
+        Action("Unload", "barrier", function() MC.unload() end, "Remove the menu and every hook."),
+        Action("Panic",  "command_block",  function() MC.setOpen(false) end, "Shut the inventory now."),
     },
 
     presets = {
-        { kind = "action", label = "Preset 1", icon = "diamond", desc = "click load, shift-click save" },
-        { kind = "action", label = "Preset 2", icon = "diamond", desc = "click load, shift-click save" },
-        { kind = "action", label = "Preset 3", icon = "diamond", desc = "click load, shift-click save" },
-        { kind = "action", label = "Preset 4", icon = "diamond", desc = "click load, shift-click save" },
+        { kind = "action", label = "Preset 1", icon = "chest", desc = "click load, shift-click save" },
+        { kind = "action", label = "Preset 2", icon = "chest", desc = "click load, shift-click save" },
+        { kind = "action", label = "Preset 3", icon = "chest", desc = "click load, shift-click save" },
+        { kind = "action", label = "Preset 4", icon = "chest", desc = "click load, shift-click save" },
     },
 
-    result = { kind = "action", label = "Save To Disk", icon = "clock",
+    result = { kind = "action", label = "Save To Disk", icon = "redstone_block",
                desc = "Write the current settings out." },
 
     hotbar = { "Aimbot", "Silent Aim", "Player ESP", "Fullbright", "Walk Speed",

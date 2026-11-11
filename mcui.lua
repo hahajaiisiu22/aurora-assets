@@ -554,16 +554,9 @@ local function itemState(item)
     return item.kind == "toggle" and cfg()[item.key] == true
 end
 
-local function itemCount(item)
-    if item.kind == "slider" then
-        local v = cfg()[item.key]
-        if type(v) ~= "number" then return "" end
-        if v >= 1000 then return string.format("%.0fk", v / 1000) end
-        return string.format("%." .. (item.dec or 0) .. "f", v)
-    elseif item.kind == "cycle" then
-        local v = cfg()[item.key]
-        return v and string.sub(tostring(v), 1, 4) or ""
-    end
+-- Nothing is ever stamped on an item. A stack number on a spyglass reads as
+-- "120 spyglasses", which is nonsense -- the value lives in the tooltip.
+local function itemCount(_item)
     return ""
 end
 
@@ -689,13 +682,18 @@ local function buildAvatar(parent)
 
     local cam = new("Camera", {}, vp)
     vp.CurrentCamera = cam
-    -- in FRONT of him: LookVector is the way he faces, so the camera stands
-    -- out along it and looks back down it. Far enough out, and aimed at the
-    -- waist, that he fits head to toe in the box.
-    cam.FieldOfView = 30
-    cam.CFrame = CFrame.lookAt(
-        base.Position + base.LookVector * 9.5 + Vector3.new(0, 0.2, 0),
-        base.Position + Vector3.new(0, -0.35, 0))
+    -- in FRONT of him: LookVector is the way he faces, so the camera stands out
+    -- along it and looks back down it. The distance is not a guess -- it is the
+    -- one that makes his real height fill the box: half his height divided by
+    -- the tangent of half the field of view, plus a margin so nothing clips.
+    local fov    = 30
+    local extent = clone:GetExtentsSize()
+    local height = math.max(extent.Y, 4)
+    local dist   = (height * 0.5) / math.tan(math.rad(fov * 0.5)) * 1.18
+    local mid    = clone:GetPivot().Position + Vector3.new(0, extent.Y * 0.08, 0)
+
+    cam.FieldOfView = fov
+    cam.CFrame = CFrame.lookAt(mid + base.LookVector * dist, mid)
 
     return vp
 end
@@ -710,7 +708,8 @@ local function stepAvatar()
         local size = avatar.vp.AbsoluteSize
         local vp   = (Camera and Camera.ViewportSize) or Vector2.new(1920, 1080)
         yaw   = math.clamp((m.X - (abs.X + size.X * 0.5)) / (vp.X * 0.32), -1, 1) * 0.85
-        pitch = math.clamp((m.Y - (abs.Y + size.Y * 0.5)) / (vp.Y * 0.32), -1, 1) * 0.5
+        -- facing the camera flips up and down with it, same as left and right
+        pitch = math.clamp((m.Y - (abs.Y + size.Y * 0.5)) / (vp.Y * 0.32), -1, 1) * -0.5
     end
 
     local bodyCF = avatar.base * CFrame.Angles(0, yaw * 0.35, 0)
@@ -955,11 +954,6 @@ local function buildPanel()
     end
     for col = 1, 10 do
         hotSlots[col] = makeSlot(panel, COLX[col], HOTY, "hot", col)
-        new("TextLabel", {
-            Position = sheetPos(COLX[col], HOTY - 26), Size = sheetSize(SLOT, 22),
-            BackgroundTransparency = 1, FontFace = F_PIXEL, TextScaled = true,
-            TextColor3 = C.text, Text = tostring(col % 10), ZIndex = 12,
-        }, panel)
     end
 
     dragIcon = new("ImageLabel", {
@@ -1129,17 +1123,6 @@ local function wireSlot(slot)
 
         if slot.role == "grid" and slot.item and shift then
             bindHot(firstFreeHot(), slot.item)
-            return
-        end
-
-        if slot.role == "craft" then
-            if shift then
-                if spec.savePreset then pcall(spec.savePreset, slot.index) end
-            elseif spec.loadPreset then
-                pcall(spec.loadPreset, slot.index)
-            end
-            blip(1.3, 0.3)
-            refresh()
             return
         end
 
@@ -1379,33 +1362,29 @@ local demoSpec = {
             Action("Apply Now",    "redstone_block", applyChar, "Push speed and jump onto your character."),
         } },
         { name = "Misc", items = {
+            Toggle("Anti Fling",   "AntiFling",   "shield",           "Clamp silly velocities."),
+            Toggle("Anti Void",    "AntiVoid",    "ender_pearl",      "Catch a fall out of the map."),
+            Toggle("God Mode",     "GodMode",     "golden_apple",     "Whatever the game allows."),
+            Toggle("Anti Ragdoll", "AntiRagdoll", "totem_of_undying", "Stand back up."),
             Action("Rejoin", "oak_boat", function()
                 game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
             end, "Same place, fresh server."),
         } },
     },
 
-    armour = {
-        Toggle("Anti Fling",   "AntiFling",   "shield", "Clamp silly velocities."),
-        Toggle("Anti Void",    "AntiVoid",    "ender_pearl", "Catch a fall out of the map."),
-        Toggle("God Mode",     "GodMode",     "golden_apple",  "Whatever the game allows."),
-        Toggle("Anti Ragdoll", "AntiRagdoll", "totem_of_undying", "Stand back up."),
-    },
-
-    side = {
-        Action("Unload", "barrier", function() MC.unload() end, "Remove the menu and every hook."),
-        Action("Panic",  "command_block",  function() MC.setOpen(false) end, "Shut the inventory now."),
-    },
-
+    -- the armour column, the pair beside the preview and the result slot stay
+    -- empty: they are armour and a crafting output, not a home for features.
+    -- The 2x2 is the utility block instead.
     presets = {
-        { kind = "action", label = "Preset 1", icon = "chest", desc = "click load, shift-click save" },
-        { kind = "action", label = "Preset 2", icon = "chest", desc = "click load, shift-click save" },
-        { kind = "action", label = "Preset 3", icon = "chest", desc = "click load, shift-click save" },
-        { kind = "action", label = "Preset 4", icon = "chest", desc = "click load, shift-click save" },
+        Action("Unload",  "barrier",       function() MC.unload() end,
+            "Remove the menu, the hooks and this panel."),
+        Action("Console", "command_block", function() end,
+            "The command bar. Not wired up yet."),
+        Action("Presets", "chest",         function() end,
+            "Saved loadouts live here."),
+        Action("Save",    "redstone_block",function() end,
+            "Write the current settings to disk."),
     },
-
-    result = { kind = "action", label = "Save To Disk", icon = "redstone_block",
-               desc = "Write the current settings out." },
 
     hotbar = { "Aimbot", "Silent Aim", "Player ESP", "Fullbright", "Walk Speed",
                "Infinite Jump", "Kill Aura", "Chams", "No Fog", "Apply Now" },

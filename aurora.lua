@@ -2804,22 +2804,6 @@ local function rootPage()
     } }
 end
 
---============================================================================
--- minecraft skin hook
---  The skin itself lives in the loader, not here. This chunk already sits at
---  luau's 200 locals per function and the bridge needs eight more of them, so
---  all this module does is hand over the handful of things the skin reads.
---============================================================================
-
-_G.AURORA_SKIN = {
-    root    = rootPage,
-    config  = Config,
-    screen  = screen,
-    save    = function() pcall(saveConfig) end,
-    repaint = function() pcall(render) end,
-    unload  = function() if _G.__AURORA then _G.__AURORA() end end,
-}
-
 paintTheme()
 pushPage(rootPage())
 
@@ -3457,6 +3441,9 @@ end))
 
 
 _G.Aurora = {
+    Root   = rootPage,
+    Save   = saveConfig,
+    Screen = screen,
     Config = Config,
     Status = function() return statusText end,
     Target = function() return currentTarget, currentPart end,
@@ -4445,22 +4432,6 @@ local function rootPage()
     } }
 end
 
---============================================================================
--- minecraft skin hook
---  The skin itself lives in the loader, not here. This chunk already sits at
---  luau's 200 locals per function and the bridge needs eight more of them, so
---  all this module does is hand over the handful of things the skin reads.
---============================================================================
-
-_G.AURORA_SKIN = {
-    root    = rootPage,
-    config  = Config,
-    screen  = screen,
-    save    = function() pcall(saveConfig) end,
-    repaint = function() pcall(render) end,
-    unload  = function() if _G.__HYPERSHOT then _G.__HYPERSHOT() end end,
-}
-
 --------------------------------------------------------------------- render
 local function valueText(item)
     if item.kind == "sub" then return ">>>" end
@@ -4692,6 +4663,9 @@ end
 --============================================================================
 
 _G.Hypershot = {
+    Root   = rootPage,
+    Save   = saveConfig,
+    Screen = screen,
     Config = Config,
     Status = function() return statusText end,
     Target = function() return currentTarget end,
@@ -6083,22 +6057,6 @@ local function rootPage()
     } }
 end
 
---============================================================================
--- minecraft skin hook
---  The skin itself lives in the loader, not here. This chunk already sits at
---  luau's 200 locals per function and the bridge needs eight more of them, so
---  all this module does is hand over the handful of things the skin reads.
---============================================================================
-
-_G.AURORA_SKIN = {
-    root    = rootPage,
-    config  = Config,
-    screen  = screen,
-    save    = function() pcall(saveConfig) end,
-    repaint = function() pcall(render) end,
-    unload  = function() if _G.__MM2 then _G.__MM2() end end,
-}
-
 --------------------------------------------------------------------- render
 local function valueText(item)
     if item.kind == "sub" then return ">>>" end
@@ -6311,6 +6269,9 @@ end
 --============================================================================
 
 _G.MM2 = {
+    Root   = rootPage,
+    Save   = saveConfig,
+    Screen = screen,
     Config = Config,
     Status = function() return statusText end,
     Role   = myRole,
@@ -6448,8 +6409,27 @@ do
         return pages
     end
 
+    -- every module already publishes a table of its own -- Config, the menu
+    -- functions, and now its root page, its save and its ScreenGui. Reading
+    -- that costs the module nothing: it is the table it was building anyway.
+    local function skinOf()
+        local m = _G.Aurora or _G.Hypershot or _G.MM2
+        if type(m) ~= "table" or type(m.Root) ~= "function" then return nil end
+        return {
+            root    = m.Root,
+            config  = m.Config,
+            screen  = m.Screen,
+            save    = function() pcall(m.Save) end,
+            repaint = function() if m.Menu and m.Menu.Draw then pcall(m.Menu.Draw) end end,
+            unload  = function()
+                local u = _G.__AURORA or _G.__HYPERSHOT or _G.__MM2
+                if u then pcall(u) end
+            end,
+        }
+    end
+
     local function backToGta()
-        local skin = _G.AURORA_SKIN
+        local skin = skinOf()
         if not skin then return end
         skin.config.MinecraftUI = false
         if _G.AuroraMC then pcall(_G.AuroraMC.unload) end
@@ -6457,27 +6437,8 @@ do
         skin.repaint()
     end
 
-    local function specFrom(skin)
-        local ok, root = pcall(skin.root)
-        return {
-            title     = (ok and root and root.title) or "Aurora",
-            config    = skin.config,
-            pages     = pagesFrom(skin),
-            utilities = {
-                { kind = "action", label = "GTA Menu", icon = "redstone_block",
-                  desc = "Back to the Aurora menu.", run = backToGta },
-                { kind = "action", label = "Save Config", icon = "chest",
-                  desc = "Write every setting to disk.", run = skin.save },
-                { kind = "action", label = "Console", icon = "command_block",
-                  desc = "The command bar. Not wired up yet.", run = function() end },
-                { kind = "action", label = "Unload", icon = "barrier",
-                  desc = "Remove the menu and every hook.", run = skin.unload },
-            },
-        }
-    end
-
     _G.AURORA_SKIN_TOGGLE = function(on)
-        local skin = _G.AURORA_SKIN
+        local skin = skinOf()
         if not skin then return end
 
         if not on then backToGta() return end
